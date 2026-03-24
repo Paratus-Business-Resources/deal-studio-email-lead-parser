@@ -189,6 +189,114 @@ def parse_address_loose(addr: str, default_country: str = "") -> dict:
     return {"address1": s, "city": "", "state": "", "zip": "", "country": country}
 
 # ==============================
+# ✅ Axial (HTML)
+# ==============================
+def extract_axial_html(html_body):
+
+    soup = BeautifulSoup(html_body, "html.parser")
+    text = soup.get_text("\n")
+
+    # -----------------------------
+    # SAFE HELPERS
+    # -----------------------------
+    def clean(val):
+        return val.strip() if val else ""
+
+    def find_after(label):
+        try:
+            m = re.search(rf"{re.escape(label)}\s*\n(.+)", text, re.I)
+            return m.group(1).strip() if m else ""
+        except:
+            return ""
+
+    # -----------------------------
+    # ✅ REF ID (PROJECT NAME)
+    # "project ExpressLA"
+    # -----------------------------
+    ref_id = ""
+    try:
+        m = re.search(r"project\s+([A-Za-z0-9\-]+)", text, re.I)
+        if m:
+            ref_id = m.group(1).strip()
+    except:
+        pass
+
+    # -----------------------------
+    # ✅ NAME (UNDER LINKEDIN)
+    # -----------------------------
+    first_name = ""
+    last_name = ""
+
+    try:
+        linkedin_label = soup.find(string=re.compile("LinkedIn", re.I))
+        if linkedin_label:
+            parent = linkedin_label.find_parent()
+            link = parent.find_next("a")
+            if link:
+                name = link.get_text(strip=True)
+                if " " in name:
+                    first_name, last_name = name.split(" ", 1)
+                else:
+                    first_name = name
+    except:
+        pass
+
+    # -----------------------------
+    # ✅ EMAIL
+    # -----------------------------
+    email = ""
+    try:
+        email = find_after("Email")
+    except:
+        pass
+
+    # -----------------------------
+    # ✅ PHONE
+    # -----------------------------
+    phone = ""
+    try:
+        raw_phone = find_after("Phone Number")
+        phone = normalize_phone_us_e164(raw_phone)
+    except:
+        pass
+
+    # -----------------------------
+    # ✅ COMPANY (FROM COMPANY TYPE SECTION HEADER)
+    # Actually company name is in intro line
+    # -----------------------------
+    company = ""
+    try:
+        m = re.search(r"at\s+([A-Za-z0-9 &]+)\s+just signed", text, re.I)
+        if m:
+            company = m.group(1).strip()
+    except:
+        pass
+
+    # -----------------------------
+    # RETURN (MATCH YOUR STRUCTURE)
+    # -----------------------------
+    return {
+        "first_name": clean(first_name),
+        "last_name": clean(last_name),
+        "email": clean(email),
+        "phone": clean(phone),
+        "ref_id": clean(ref_id),
+        "listing_id": "",
+        "headline": "",  # not needed for Axial
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": "",
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+# ==============================
 # ✅ DealStream (HTML)
 # ==============================
 def extract_dealstream_html(html_body):
@@ -1680,7 +1788,16 @@ def parse_email():
         if "fcbb.com" in lowered or "oms.fcbb.com" in lowered or "first choice business brokers" in lowered:
             flat = extract_fcbb_html(body) if is_html else extract_fcbb_text(body)
             return jsonify(to_nested("fcbb", flat))
-
+            
+         # --- Axial ---
+        elif (
+            "axial" in lowered
+            or "grant param access" in lowered
+            or "axial.net" in lowered
+        ):
+            flat = extract_axial_html(body)
+            return jsonify(to_nested("axial", flat))
+            
         # --- BizBuySell ---
         elif "bizbuysell" in lowered:
             flat = extract_bizbuysell_html(body) if is_html else extract_bizbuysell_text(body)
