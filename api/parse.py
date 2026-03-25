@@ -709,24 +709,25 @@ def extract_bizbuysell_newbuyer_html(html_body):
         pass
 
     return {
-        "first_name": first_name,
-        "last_name": last_name,
-        "email": email,
-        "phone": phone,
-        "ref_id": "",  # important: EMPTY
-        "listing_id": listing_id,
-        "headline": "",
-        "address": "",
-        "city": "",
-        "state": "",
-        "country": "",
-        "contact_zip": "",
-        "investment_amount": "",
-        "purchase_timeline": "",
-        "comments": comments,
-        "listing_url": "",
-        "services_interested_in": "",
-        "heard_about": ""
+    "first_name": first_name,
+    "last_name": last_name,
+    "email": email,
+    "phone": phone,
+    "ref_id": listing_id,
+    "listing_id": "",
+    "headline": "",
+    "address": "",
+    "city": "",
+    "state": "",
+    "country": "",
+    "contact_zip": "",
+    "investment_amount": "",
+    "purchase_timeline": "",
+    "comments": comments,
+    "listing_url": "",
+    "services_interested_in": "",
+    "heard_about": ""
+}
     }
 # ==============================
 # ✅ BusinessesForSale (TEXT)
