@@ -1875,13 +1875,10 @@ def parse_email():
             flat = extract_axial_html(body)
             return jsonify(to_nested("axial", flat))
 
-        # --- BizBuySell NEW BUYER LEAD (variation) ---
-        elif (
-            "new buyer lead" in lowered
-            and "inquirer's information" in lowered
-        ):
-            flat = extract_bizbuysell_newbuyer_html(body)
-            return jsonify(to_nested("bizbuysell", flat))
+       # --- BizBuySell NEW BUYER LEAD (variation) ---
+       elif "new buyer lead" in lowered:
+           flat = extract_bizbuysell_newbuyer_html(body)
+           return jsonify(to_nested("bizbuysell", flat))
 
    
         # --- BizBuySell ---
