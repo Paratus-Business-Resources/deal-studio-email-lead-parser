@@ -649,6 +649,85 @@ def extract_bizbuysell_text(text_body):
         "heard_about": ""
     }
 
+
+# ==============================
+# ✅ BizBuySell (HTML) — New Buyer Lead Notification
+# ==============================
+def extract_bizbuysell_newbuyer_html(html_body):
+
+    soup = BeautifulSoup(html.unescape(html_body), "html.parser")
+    text = soup.get_text("\n")
+
+    def find_after(label):
+        try:
+            m = re.search(rf"{re.escape(label)}\s*\n(.+)", text, re.I)
+            return m.group(1).strip() if m else ""
+        except:
+            return ""
+
+    # -----------------------------
+    # NAME
+    # -----------------------------
+    name = find_after("Contact Name")
+    first_name, last_name = (name.split(" ", 1) if " " in name else (name, ""))
+
+    # -----------------------------
+    # EMAIL
+    # -----------------------------
+    email = find_after("Contact Email")
+
+    # -----------------------------
+    # PHONE
+    # -----------------------------
+    raw_phone = find_after("Contact Phone")
+    phone = normalize_phone_us_e164(raw_phone)
+
+    # -----------------------------
+    # LISTING ID (NOT REF ID)
+    # -----------------------------
+    listing_id = ""
+    try:
+        m = re.search(r"Listing ID.*?(\d+)", text, re.I)
+        if m:
+            listing_id = m.group(1)
+    except:
+        pass
+
+    # -----------------------------
+    # COMMENTS
+    # -----------------------------
+    comments = ""
+    try:
+        block = re.search(
+            r"Comments\s*\n(.+?)\n\s*We take our lead quality",
+            text,
+            re.S | re.I
+        )
+        if block:
+            comments = clean_comments_block(block.group(1))
+    except:
+        pass
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": "",  # important: EMPTY
+        "listing_id": listing_id,
+        "headline": "",
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": comments,
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
 # ==============================
 # ✅ BusinessesForSale (TEXT)
 # ==============================
@@ -1797,7 +1876,12 @@ def parse_email():
         ):
             flat = extract_axial_html(body)
             return jsonify(to_nested("axial", flat))
-            
+
+        # --- BizBuySell NEW BUYER LEAD (variation) ---
+        elif "new buyer lead notification" in lowered:
+            flat = extract_bizbuysell_newbuyer_html(body)
+            return jsonify(to_nested("bizbuysell", flat))
+   
         # --- BizBuySell ---
         elif "bizbuysell" in lowered:
             flat = extract_bizbuysell_html(body) if is_html else extract_bizbuysell_text(body)
