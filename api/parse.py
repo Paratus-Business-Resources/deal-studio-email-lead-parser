@@ -649,86 +649,90 @@ def extract_bizbuysell_text(text_body):
         "heard_about": ""
     }
 
-
 # ==============================
-# ✅ BizBuySell (HTML) — New Buyer Lead Notification
+# ✅ BizBuySell (HTML) — New Buyer Lead Notification (FIXED)
 # ==============================
 def extract_bizbuysell_newbuyer_html(html_body):
 
     soup = BeautifulSoup(html.unescape(html_body), "html.parser")
-    text = soup.get_text("\n")
 
-    def find_after(label):
+    def get_value(label):
         try:
-            m = re.search(rf"{re.escape(label)}\s*\n(.+)", text, re.I)
-            return m.group(1).strip() if m else ""
+            tag = soup.find(string=re.compile(label, re.I))
+            if tag:
+                td = tag.find_parent("td")
+                if td:
+                    next_td = td.find_next_sibling("td")
+                    if next_td:
+                        return next_td.get_text(strip=True)
         except:
-            return ""
+            pass
+        return ""
 
     # -----------------------------
     # NAME
     # -----------------------------
-    name = find_after("Contact Name")
+    name = get_value("Contact Name")
     first_name, last_name = (name.split(" ", 1) if " " in name else (name, ""))
 
     # -----------------------------
     # EMAIL
     # -----------------------------
-    email = find_after("Contact Email")
+    email = get_value("Contact Email")
 
     # -----------------------------
     # PHONE
     # -----------------------------
-    raw_phone = find_after("Contact Phone")
+    raw_phone = get_value("Contact Phone")
     phone = normalize_phone_us_e164(raw_phone)
 
     # -----------------------------
-    # LISTING ID (NOT REF ID)
+    # LISTING ID → REF ID
     # -----------------------------
-    listing_id = ""
+    ref_id = ""
     try:
-        m = re.search(r"Listing ID.*?(\d+)", text, re.I)
+        m = re.search(r"Listing ID.*?(\d+)", soup.get_text(" "), re.I)
         if m:
-            listing_id = m.group(1)
+            ref_id = m.group(1)
     except:
         pass
 
     # -----------------------------
-    # COMMENTS
+    # COMMENTS (FULL BLOCK)
     # -----------------------------
     comments = ""
     try:
-        block = re.search(
-            r"Comments\s*\n(.+?)\n\s*We take our lead quality",
-            text,
-            re.S | re.I
-        )
-        if block:
-            comments = clean_comments_block(block.group(1))
+        tag = soup.find(string=re.compile("Comments", re.I))
+        if tag:
+            td = tag.find_parent("td")
+            if td:
+                next_td = td.find_next_sibling("td")
+                if next_td:
+                    comments = clean_comments_block(next_td.get_text(" ", strip=True))
     except:
         pass
 
     return {
-    "first_name": first_name,
-    "last_name": last_name,
-    "email": email,
-    "phone": phone,
-    "ref_id": listing_id,
-    "listing_id": "",
-    "headline": "",
-    "address": "",
-    "city": "",
-    "state": "",
-    "country": "",
-    "contact_zip": "",
-    "investment_amount": "",
-    "purchase_timeline": "",
-    "comments": comments,
-    "listing_url": "",
-    "services_interested_in": "",
-    "heard_about": ""
-}
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": "",
+        "headline": "",
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": comments,
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
     }
+    
 # ==============================
 # ✅ BusinessesForSale (TEXT)
 # ==============================
