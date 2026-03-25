@@ -650,82 +650,116 @@ def extract_bizbuysell_text(text_body):
     }
 
 # ==============================
-# ✅ BizBuySell NEW BUYER LEAD — FINAL FIX
+# ✅ BizBuySell (HTML) — New Buyer Lead (FINAL)
 # ==============================
 def extract_bizbuysell_newbuyer_html(html_body):
 
     soup = BeautifulSoup(html.unescape(html_body), "html.parser")
-
-    data = {}
+    text_content = soup.get_text(" ", strip=True)
 
     # -----------------------------
-    # LOOP TABLE ROWS (THIS IS KEY)
+    # HELPER (robust field extraction)
     # -----------------------------
-    for row in soup.find_all("tr"):
-        cols = row.find_all("td")
+    def get_field(label):
+        stag = soup.find(
+            lambda tag: tag.name in ["b", "span"] and label.lower() in tag.get_text(strip=True).lower()
+        )
 
-        if len(cols) != 2:
-            continue
+        if stag:
+            # --- Listing ID (special: inside link)
+            if label.lower() == "listing id":
+                link = stag.find_next("a")
+                if link:
+                    return link.get_text(strip=True)
 
-        label = cols[0].get_text(strip=True).lower()
-        value_cell = cols[1]
+            # --- Standard next span
+            nxt = stag.find_next("span")
+            if nxt:
+                return nxt.get_text(strip=True)
 
-        # --- HANDLE EMAIL ---
-        if "email" in label:
-            a = value_cell.find("a", href=True)
-            if a:
-                data["email"] = a.get_text(strip=True)
-            else:
-                data["email"] = value_cell.get_text(strip=True)
+            # --- Inline span fallback
+            td = stag.find_parent("td")
+            if td:
+                spans = td.find_all("span")
+                if spans:
+                    return spans[-1].get_text(strip=True)
 
-        # --- HANDLE PHONE ---
-        elif "phone" in label:
-            a = value_cell.find("a", href=True)
-            raw = a.get_text(strip=True) if a else value_cell.get_text(strip=True)
-            data["phone"] = normalize_phone_us_e164(raw)
+                raw = td.get_text(" ", strip=True)
+                return re.sub(rf"{label}\s*:", "", raw, flags=re.I).strip()
 
-        # --- HANDLE NAME ---
-        elif "contact name" in label:
-            name = value_cell.get_text(strip=True)
-            if " " in name:
-                data["first_name"], data["last_name"] = name.split(" ", 1)
-            else:
-                data["first_name"] = name
-                data["last_name"] = ""
+        # --- Regex fallback (safe)
+        m = re.search(
+            rf"{label}\s*:\s*(.+?)(?=\s[A-Z][a-z]+\s*:|$)",
+            text_content,
+            re.I
+        )
+        return m.group(1).strip() if m else ""
 
-        # --- COMMENTS ---
-        elif "comments" in label:
-            data["comments"] = clean_comments_block(value_cell.get_text(" ", strip=True))
+    # -----------------------------
+    # NAME (clean + bulletproof)
+    # -----------------------------
+    name = get_field("Contact Name")
+
+    # Remove label bleed (e.g. "Contact Email")
+    name = re.sub(r'\bContact\b.*$', '', name, flags=re.I).strip()
+
+    # Remove anything after unexpected caps label
+    name = re.split(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s*:\b', name)[0].strip()
+
+    first_name, last_name = (name.split(" ", 1) if " " in name else (name, ""))
+
+    # -----------------------------
+    # EMAIL (strict regex cleanup)
+    # -----------------------------
+    raw_email = get_field("Contact Email")
+    m_email = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", raw_email)
+    email = m_email.group(0) if m_email else ""
+
+    # -----------------------------
+    # PHONE (clean + normalized)
+    # -----------------------------
+    raw_phone = get_field("Contact Phone")
+    phone = normalize_phone_us_e164(raw_phone)
 
     # -----------------------------
     # LISTING ID → REF ID
     # -----------------------------
-    ref_id = ""
-    m = re.search(r"Listing ID.*?(\d+)", soup.get_text(" "), re.I)
-    if m:
-        ref_id = m.group(1)
+    listing_id = get_field("Listing ID")
+    ref_id = listing_id if listing_id else ""
 
+    # -----------------------------
+    # COMMENTS (hard stop cleanup)
+    # -----------------------------
+    raw_comments = get_field("Comments")
+
+    # Stop at known footer / junk phrases
+    raw_comments = re.split(
+        r"(We take our lead quality|Thank you|BizBuySell|Maximize Your Listing|Powered)",
+        raw_comments,
+        flags=re.I
+    )[0]
+
+    comments = clean_comments_block(raw_comments)
+
+    # -----------------------------
+    # RETURN
+    # -----------------------------
     return {
-        "first_name": data.get("first_name", ""),
-        "last_name": data.get("last_name", ""),
-        "email": data.get("email", ""),
-        "phone": data.get("phone", ""),
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
         "ref_id": ref_id,
         "listing_id": "",
         "headline": "",
-        "address": "",
-        "city": "",
-        "state": "",
-        "country": "",
-        "contact_zip": "",
-        "investment_amount": "",
-        "purchase_timeline": "",
-        "comments": data.get("comments", ""),
+        "contact_zip": get_field("Contact Zip"),
+        "investment_amount": get_field("Able to Invest"),
+        "purchase_timeline": get_field("Purchase Within"),
+        "comments": comments,
         "listing_url": "",
         "services_interested_in": "",
         "heard_about": ""
     }
-    
 # ==============================
 # ✅ BusinessesForSale (TEXT)
 # ==============================
@@ -1865,8 +1899,8 @@ def parse_email():
         if "fcbb.com" in lowered or "oms.fcbb.com" in lowered or "first choice business brokers" in lowered:
             flat = extract_fcbb_html(body) if is_html else extract_fcbb_text(body)
             return jsonify(to_nested("fcbb", flat))
-            
-         # --- Axial ---
+
+        # --- Axial ---
         elif (
             "axial" in lowered
             or "grant param access" in lowered
@@ -1875,12 +1909,11 @@ def parse_email():
             flat = extract_axial_html(body)
             return jsonify(to_nested("axial", flat))
 
-       # --- BizBuySell NEW BUYER LEAD (variation) ---
-       elif "new buyer lead" in lowered:
-           flat = extract_bizbuysell_newbuyer_html(body)
-           return jsonify(to_nested("bizbuysell", flat))
+        # --- BizBuySell NEW BUYER LEAD (variation) ---
+        elif "new buyer lead" in lowered:
+            flat = extract_bizbuysell_newbuyer_html(body)
+            return jsonify(to_nested("bizbuysell", flat))
 
-   
         # --- BizBuySell ---
         elif "bizbuysell" in lowered:
             flat = extract_bizbuysell_html(body) if is_html else extract_bizbuysell_text(body)
