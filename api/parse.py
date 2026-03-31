@@ -1821,6 +1821,138 @@ def extract_bizlistpro_html(html_body):
         "company": company
     }
 
+# ==============================
+# ✅ Transworld / GorillaDash (HTML)
+# ==============================
+def extract_transworld_html(html_body):
+
+    soup = BeautifulSoup(html_body, "html.parser")
+    text = soup.get_text("\n")
+
+    # -----------------------------
+    # SAFE HELPERS
+    # -----------------------------
+    def clean(val):
+        return val.strip() if val else ""
+
+    def get_label_value(label):
+        try:
+            lines = [l.strip() for l in text.split("\n") if l.strip()]
+
+            for i, line in enumerate(lines):
+                if line.lower() == label.lower():
+
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1]
+
+                        # If next line looks like another label → return empty
+                        if re.match(r"^[A-Z][A-Za-z ]+$", next_line):
+                            return ""
+
+                        return next_line.strip()
+
+            return ""
+
+        except:
+            return ""
+
+    # -----------------------------
+    # NAME → split first / last
+    # -----------------------------
+    full_name = get_label_value("Name")
+
+    first_name = ""
+    last_name = ""
+
+    if full_name:
+        parts = full_name.strip().split(" ", 1)
+        first_name = parts[0]
+        last_name = parts[1] if len(parts) > 1 else ""
+
+    # -----------------------------
+    # EMAIL
+    # -----------------------------
+    email = ""
+    try:
+        m = re.search(r"mailto:([^\"'>]+)", html_body, re.I)
+        if m:
+            email = m.group(1).strip()
+        else:
+            raw_email = get_label_value("Email")
+            m2 = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", raw_email)
+            email = m2.group(0) if m2 else raw_email
+    except:
+        pass
+
+    # -----------------------------
+    # PHONE
+    # -----------------------------
+    phone = ""
+    try:
+        raw_phone = get_label_value("Phone")
+        phone = normalize_phone_us_e164(raw_phone)
+    except:
+        pass
+
+    # -----------------------------
+    # REF ID (Listing Number)
+    # -----------------------------
+    ref_id = get_label_value("Listing Number")
+
+    # -----------------------------
+    # HEADLINE (Listing Title)
+    # -----------------------------
+    headline = get_label_value("Listing Title")
+
+    # -----------------------------
+    # LISTING URL
+    # -----------------------------
+    listing_url = ""
+    try:
+        raw_url = get_label_value("Listing URL")
+        listing_url = first_http_url(raw_url)
+    except:
+        pass
+
+    # -----------------------------
+    # COMMENTS (Message)
+    # -----------------------------
+    comments = ""
+    try:
+        comments = clean_comments_block(get_label_value("Message"))
+
+        # 🔥 FINAL FIX: prevent label bleed (your exact issue)
+        if re.match(r"^agent\s+(name|email|phone)$", comments.strip(), re.I):
+            comments = ""
+
+    except:
+        pass
+
+    # -----------------------------
+    # RETURN (MATCH YOUR STRUCTURE)
+    # -----------------------------
+    return {
+        "source": "tworld_website",
+        "first_name": clean(first_name),
+        "last_name": clean(last_name),
+        "email": clean(email),
+        "phone": clean(phone),
+        "ref_id": clean(ref_id),
+        "listing_id": "",
+        "headline": clean(headline),
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": clean(comments),
+        "listing_url": clean(listing_url),
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
 
 
 # ==============================
@@ -1995,6 +2127,13 @@ def parse_email():
             flat = extract_crexi_html(body) if is_html else extract_crexi_text(body)
             flat["source"] = "crexi"
             return jsonify(to_nested("crexi", flat))
+
+        # ==============================
+        # 🔥 TWorld (ADD HERE ✅)
+        # ==============================
+        elif "listing inquiry" in lowered and "listing number" in lowered:
+            flat = extract_transworld_html(body)
+            return jsonify(to_nested("tworld_website", flat))
 
         # ==============================
         # 🔥 BizListPro (LAST)
