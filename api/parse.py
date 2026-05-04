@@ -1822,7 +1822,7 @@ def extract_bizlistpro_html(html_body):
     }
 
 # ==============================
-# ✅ Transworld / GorillaDash (HTML)
+# ✅ Transworld / GorillaDash (HTML) — FINAL FINAL FIX
 # ==============================
 def extract_transworld_html(html_body):
 
@@ -1835,26 +1835,59 @@ def extract_transworld_html(html_body):
     def clean(val):
         return val.strip() if val else ""
 
-    def get_label_value(label):
+    # 🔥 TRUE FIX: u-col div pairing (Transworld uses side-by-side divs, NOT tr/td pairs)
+    def get_label_value_dom(label):
+        try:
+            rows = soup.find_all("div", class_="u-row")
+
+            for row in rows:
+                # Labels/values live in u-col divs inside an inner display:table div
+                inner = row.find("div", style=lambda s: s and "display: table" in s)
+                cols = inner.find_all("div", class_=lambda c: c and "u-col" in c, recursive=False) if inner else []
+
+                # fallback: try direct children of the row itself
+                if len(cols) < 2:
+                    cols = row.find_all("div", class_=lambda c: c and "u-col" in c, recursive=False)
+
+                if len(cols) >= 2:
+                    label_text = cols[0].get_text(" ", strip=True)
+                    value_text = cols[1].get_text(" ", strip=True)
+
+                    # strict match (prevents "Agent Name" / "Listing Title" collisions)
+                    if re.sub(r"\s+", " ", label_text.lower()).strip() == label.lower():
+                        return value_text
+
+            return ""
+        except:
+            return ""
+
+    # 🛟 fallback (rarely needed but safe)
+    def get_label_value_text(label):
         try:
             lines = [l.strip() for l in text.split("\n") if l.strip()]
 
             for i, line in enumerate(lines):
-                if line.lower() == label.lower():
+                if re.sub(r"\s+", " ", line.lower()).strip() == label.lower():
 
                     if i + 1 < len(lines):
                         next_line = lines[i + 1]
 
-                        # If next line looks like another label → return empty
+                        # avoid grabbing another label
                         if re.match(r"^[A-Z][A-Za-z ]+$", next_line):
                             return ""
 
                         return next_line.strip()
 
             return ""
-
         except:
             return ""
+
+    # unified getter
+    def get_label_value(label):
+        val = get_label_value_dom(label)
+        if val:
+            return val
+        return get_label_value_text(label)
 
     # -----------------------------
     # NAME → split first / last
@@ -1865,9 +1898,9 @@ def extract_transworld_html(html_body):
     last_name = ""
 
     if full_name:
-        parts = full_name.strip().split(" ", 1)
+        parts = full_name.strip().split()
         first_name = parts[0]
-        last_name = parts[1] if len(parts) > 1 else ""
+        last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
 
     # -----------------------------
     # EMAIL
@@ -1921,7 +1954,7 @@ def extract_transworld_html(html_body):
     try:
         comments = clean_comments_block(get_label_value("Message"))
 
-        # 🔥 FINAL FIX: prevent label bleed (your exact issue)
+        # prevent label bleed
         if re.match(r"^agent\s+(name|email|phone)$", comments.strip(), re.I):
             comments = ""
 
@@ -1929,7 +1962,7 @@ def extract_transworld_html(html_body):
         pass
 
     # -----------------------------
-    # RETURN (MATCH YOUR STRUCTURE)
+    # RETURN
     # -----------------------------
     return {
         "source": "tworld_website",
