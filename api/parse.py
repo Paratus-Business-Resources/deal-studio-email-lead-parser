@@ -190,6 +190,3097 @@ def parse_address_loose(addr: str, default_country: str = "") -> dict:
     return {"address1": s, "city": "", "state": "", "zip": "", "country": country}
 
 # ==============================
+# ✅ Axial (HTML) — Old + New Templates
+# ==============================
+def extract_axial_html(html_body):
+    soup = BeautifulSoup(html.unescape(html_body), "html.parser")
+
+    # Remove script/style noise
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+
+    # Two versions of text:
+    # - line_text preserves structure for labels
+    # - flat_text makes sentence matching easier
+    line_text = soup.get_text("\n", strip=True)
+    flat_text = soup.get_text(" ", strip=True)
+    flat_text = re.sub(r"\s+", " ", flat_text).strip()
+
+    def clean(value):
+        return value.strip() if value else ""
+
+    # Defaults
+    first_name = ""
+    last_name = ""
+    email = ""
+    phone = ""
+    ref_id = ""
+    listing_id = ""
+    headline = ""
+    company = ""
+
+    # ==============================
+    # PROJECT ID
+    #
+    # New:
+    # Project ID: 298-25512
+    #
+    # Old:
+    # project ExpressLA
+    # ==============================
+    try:
+        m = re.search(
+            r"Project\s*ID\s*:?\s*([A-Za-z0-9_-]+)",
+            flat_text,
+            re.I
+        )
+
+        if m:
+            ref_id = m.group(1).strip()
+        else:
+            # Preserve support for old Axial template
+            m = re.search(
+                r"\bproject\s+([A-Za-z0-9_-]+)",
+                flat_text,
+                re.I
+            )
+
+            if m:
+                ref_id = m.group(1).strip()
+
+        # For now Axial Project ID is used for both
+        ref_id = clean(ref_id)
+        listing_id = ref_id
+
+    except Exception:
+        pass
+
+    # ==============================
+    # NEW AXIAL PURSUIT SENTENCE
+    #
+    # James Williams at Williams Capital
+    # just pursued
+    # Franchise Kickboxing and Fitness Gym!
+    #
+    # IMPORTANT:
+    # Use the hyperlinks around the sentence first.
+    # This prevents Axial boilerplate from becoming
+    # the contact's first/last name.
+    # ==============================
+    try:
+        pursued_node = soup.find(
+            string=re.compile(r"\bjust\s+pursued\b", re.I)
+        )
+
+        if pursued_node:
+            # Find a reasonably local parent containing the sentence
+            container = pursued_node.find_parent(
+                ["td", "p", "div", "tr"]
+            )
+
+            if container:
+                links = container.find_all("a")
+
+                # In the new Axial template:
+                # first meaningful link = contact name
+                # second meaningful link = listing/headline
+                meaningful_links = []
+
+                for link in links:
+                    link_text = re.sub(
+                        r"\s+",
+                        " ",
+                        link.get_text(" ", strip=True)
+                    ).strip()
+
+                    if not link_text:
+                        continue
+
+                    href = (link.get("href") or "").lower()
+
+                    # Skip mailto/tel links if somehow present
+                    if href.startswith("mailto:"):
+                        continue
+
+                    if href.startswith("tel:"):
+                        continue
+
+                    meaningful_links.append(link_text)
+
+                if meaningful_links:
+                    # First link should be James Williams
+                    name = meaningful_links[0]
+
+                    name_parts = name.split(None, 1)
+
+                    if name_parts:
+                        first_name = name_parts[0]
+
+                    if len(name_parts) > 1:
+                        last_name = name_parts[1]
+
+                if len(meaningful_links) >= 2:
+                    # Second link should be pursued listing
+                    headline = meaningful_links[1]
+
+                # Get company from the local pursuit sentence
+                local_text = re.sub(
+                    r"\s+",
+                    " ",
+                    container.get_text(" ", strip=True)
+                ).strip()
+
+                m_company = re.search(
+                    r"\bat\s+(.+?)\s+just\s+pursued\b",
+                    local_text,
+                    re.I
+                )
+
+                if m_company:
+                    company = m_company.group(1).strip()
+
+                    # If name was included at beginning,
+                    # remove it from company capture if necessary
+                    full_name = " ".join(
+                        p for p in [first_name, last_name] if p
+                    ).strip()
+
+                    if full_name and company.lower().startswith(
+                        full_name.lower() + " at "
+                    ):
+                        company = company[len(full_name) + 4:].strip()
+
+        # ==============================
+        # SAFE FALLBACK
+        # ==============================
+        # If the links weren't usable, find the pursuit sentence.
+        #
+        # Critically, we start after "Project ID" so the
+        # Axial disclaimer at the beginning cannot become
+        # the person's name.
+        # ==============================
+        if not first_name or not headline:
+            pursuit_area = flat_text
+
+            project_match = re.search(
+                r"Project\s*ID\s*:?\s*[A-Za-z0-9_-]+",
+                pursuit_area,
+                re.I
+            )
+
+            if project_match:
+                pursuit_area = pursuit_area[project_match.end():]
+
+            m = re.search(
+                r"([A-Z][A-Za-z.'’-]+"
+                r"(?:\s+[A-Z][A-Za-z.'’-]+){1,3})"
+                r"\s+at\s+"
+                r"(.+?)"
+                r"\s+just\s+pursued\s+"
+                r"(.+?)"
+                r"(?:!|You opted|You can also|More about|$)",
+                pursuit_area,
+                re.I
+            )
+
+            if m:
+                full_name = clean(m.group(1))
+                company = clean(m.group(2))
+                headline = clean(m.group(3))
+
+                parts = full_name.split(None, 1)
+
+                if parts:
+                    first_name = parts[0]
+
+                if len(parts) > 1:
+                    last_name = parts[1]
+
+    except Exception:
+        pass
+
+    # ==============================
+    # OLD AXIAL NAME FALLBACK
+    #
+    # Keep compatibility with old template
+    # where contact appeared after LinkedIn.
+    # ==============================
+    if not first_name:
+        try:
+            linkedin_label = soup.find(
+                string=re.compile(r"LinkedIn", re.I)
+            )
+
+            if linkedin_label:
+                parent = linkedin_label.find_parent()
+
+                if parent:
+                    link = parent.find_next("a")
+
+                    if link:
+                        name = clean(link.get_text(" ", strip=True))
+                        parts = name.split(None, 1)
+
+                        if parts:
+                            first_name = parts[0]
+
+                        if len(parts) > 1:
+                            last_name = parts[1]
+
+        except Exception:
+            pass
+
+    # ==============================
+    # EMAIL
+    # Prefer actual mailto link
+    # ==============================
+    try:
+        mailto = soup.find(
+            "a",
+            href=re.compile(r"^mailto:", re.I)
+        )
+
+        if mailto:
+            email = re.sub(
+                r"^mailto:",
+                "",
+                mailto.get("href", ""),
+                flags=re.I
+            )
+
+            email = email.split("?")[0].strip()
+
+        if not email:
+            m = re.search(
+                r"[A-Za-z0-9._%+\-]+"
+                r"@[A-Za-z0-9.\-]+"
+                r"\.[A-Za-z]{2,}",
+                flat_text
+            )
+
+            if m:
+                email = m.group(0).strip()
+
+    except Exception:
+        pass
+
+    # ==============================
+    # PHONE
+    # Prefer actual tel link
+    # ==============================
+    try:
+        tel = soup.find(
+            "a",
+            href=re.compile(r"^tel:", re.I)
+        )
+
+        if tel:
+            raw_phone = re.sub(
+                r"^tel:",
+                "",
+                tel.get("href", ""),
+                flags=re.I
+            )
+
+            phone = normalize_phone_us_e164(raw_phone)
+
+        if not phone:
+            m = re.search(
+                r"Phone\s*(?:Number)?\s*:?\s*"
+                r"(\+?1?[\s().-]*\d{3}"
+                r"[\s().-]*\d{3}"
+                r"[\s.-]*\d{4})",
+                flat_text,
+                re.I
+            )
+
+            if m:
+                phone = normalize_phone_us_e164(
+                    m.group(1)
+                )
+
+    except Exception:
+        pass
+
+    # ==============================
+    # COMPANY FALLBACK
+    # ==============================
+    if not company:
+        try:
+            m = re.search(
+                r"\bat\s+(.+?)\s+just\s+pursued\b",
+                flat_text,
+                re.I
+            )
+
+            if m:
+                candidate = clean(m.group(1))
+
+                # Only use the last reasonable company-sized section
+                # rather than Axial boilerplate.
+                if len(candidate) <= 100:
+                    company = candidate
+
+        except Exception:
+            pass
+
+    # ==============================
+    # RETURN
+    # ==============================
+    return {
+        "first_name": clean(first_name),
+        "last_name": clean(last_name),
+        "email": clean(email),
+        "phone": clean(phone),
+
+        # Axial Project ID
+        "ref_id": clean(ref_id),
+
+        # For now use Project ID here too
+        "listing_id": clean(listing_id),
+
+        # Pursued listing name
+        "headline": clean(headline),
+
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": "",
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": "",
+
+        # Axial company
+        "company": clean(company)
+    }
+
+# ==============================
+# ✅ BusinessMart (TEXT)
+# ==============================
+def extract_businessmart_text(text_body):
+    text = (text_body or "").replace("\r", "")
+
+    # -----------------------------
+    # CONTACT NAME
+    # -----------------------------
+    name = ""
+
+    m = re.search(
+        r"Contact\s+Name\s*:\s*([^\n\r]+)",
+        text,
+        re.I
+    )
+
+    if m:
+        name = m.group(1).strip()
+
+    if name:
+        parts = name.split(None, 1)
+        first_name = parts[0]
+        last_name = parts[1] if len(parts) > 1 else ""
+    else:
+        first_name = ""
+        last_name = ""
+
+    # -----------------------------
+    # EMAIL
+    # -----------------------------
+    email = ""
+
+    m = re.search(
+        r"Email\s*:\s*([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})",
+        text,
+        re.I
+    )
+
+    if m:
+        email = m.group(1).strip()
+
+    # -----------------------------
+    # PHONE
+    # -----------------------------
+    phone = ""
+
+    m = re.search(
+        r"Phone\s*:\s*([^\n\r]+)",
+        text,
+        re.I
+    )
+
+    if m:
+        phone = normalize_phone_us_e164(m.group(1).strip())
+
+    # -----------------------------
+    # BUSINESS MART LISTING ID
+    # Example: Business Mart Listing# 323298
+    # -----------------------------
+    listing_id = ""
+
+    m = re.search(
+        r"Business\s+Mart\s+Listing\s*#\s*([A-Za-z0-9\-]+)",
+        text,
+        re.I
+    )
+
+    if m:
+        listing_id = m.group(1).strip()
+
+    # -----------------------------
+    # SELLER REF → REF ID
+    # Example: Seller Ref# plumbla
+    # -----------------------------
+    ref_id = ""
+
+    m = re.search(
+        r"Seller\s+Ref\s*#\s*([A-Za-z0-9._\-]+)",
+        text,
+        re.I
+    )
+
+    if m:
+        ref_id = m.group(1).strip()
+
+    # -----------------------------
+    # RETURN
+    # -----------------------------
+    return {
+        "source": "businessmart",
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": listing_id,
+        "headline": "",
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": "",
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+# ==============================
+# —✅ DealStream (HTML)
+# ==============================
+def extract_dealstream_html(html_body):
+
+    soup = BeautifulSoup(html_body, "html.parser")
+    text = soup.get_text("\n")
+
+    # ------------------------------------------------
+    # Helper: get value after a label
+    # ------------------------------------------------
+    def get_label_value(label):
+        m = re.search(rf"{re.escape(label)}\s*:\s*(.+)", text, re.I)
+        return m.group(1).strip() if m else ""
+
+    # ------------------------------------------------
+    # NAME
+    # ------------------------------------------------
+    first_name = ""
+    last_name = ""
+    name = ""
+
+    # ------------------------------------------------
+    # New DealStream card layout (Emails 3 & 4) - runs FIRST.
+    # In this layout the first <strong> in the document is the
+    # "Listing:" label, so the generic <strong> scan must not
+    # run before this block.
+    # ------------------------------------------------
+    contact_card = None
+
+    # Find the paragraph introducing the contact
+    intro = None
+
+    for p in soup.find_all("p"):
+
+        txt = " ".join(p.stripped_strings)
+
+        if "Here's how to reach them" in txt:
+            intro = p
+            break
+
+    # Find the first table after that paragraph
+    if intro:
+
+        node = intro
+
+        while node:
+
+            node = node.find_next()
+
+            if node and node.name == "table":
+                contact_card = node
+                break
+
+    if contact_card:
+
+        for p in contact_card.find_all("p"):
+
+            candidate = re.sub(r"\s+", " ", p.get_text(" ", strip=True)).strip()
+
+            if not candidate:
+                continue
+
+            lower = candidate.lower()
+
+            if (
+                lower.startswith("phone")
+                or lower.startswith("email")
+                or lower.startswith("location")
+                or lower.startswith("verified")
+                or lower.startswith("disclaimer")
+                or lower.startswith("view member")
+            ):
+                continue
+
+            if "@" in candidate:
+                continue
+
+            if len(candidate) > 50:
+                continue
+
+            parts = candidate.split()
+
+            # Skip title/company line
+            if len(parts) > 4:
+                continue
+
+            # Skip labels
+            if candidate.endswith(":"):
+                continue
+
+            name = candidate
+            break
+
+    # ------------------------------------------------
+    # Original method (<strong>) - Emails 1 & 2
+    # ------------------------------------------------
+    if not name:
+
+        for tag in soup.find_all("strong"):
+
+            candidate = tag.get_text(strip=True)
+
+            if not candidate:
+                continue
+
+            lower = candidate.lower()
+
+            if lower.startswith("hello"):
+                continue
+
+            # Skip field labels like "Listing:", "Message ID:"
+            if candidate.endswith(":"):
+                continue
+
+            # Skip boilerplate strongs from the new layout / footer
+            if lower == "dealstream" or lower.startswith("please respond"):
+                continue
+
+            if len(candidate) > 1:
+                name = candidate
+                break
+
+    # ------------------------------------------------
+    # Fallback to <b>
+    # ------------------------------------------------
+    if not name:
+
+        for tag in soup.find_all("b"):
+
+            candidate = tag.get_text(" ", strip=True)
+
+            if not candidate:
+                continue
+
+            lower = candidate.lower()
+
+            if lower.startswith("hello"):
+                continue
+
+            if lower in (
+                "listing",
+                "listing of interest",
+                "reference number",
+                "location",
+                "phone",
+                "email",
+                "verified by photo id",
+            ):
+                continue
+
+            # Skip field labels like "From:", "Sent:", "Listing:"
+            if candidate.endswith(":"):
+                continue
+
+            if "@" in candidate:
+                continue
+
+            if len(candidate) > 60:
+                continue
+
+            name = candidate
+            break
+
+    # ------------------------------------------------
+    # Final fallback - scan visible text before Listing of Interest
+    # ------------------------------------------------
+    if not name:
+
+        for candidate in soup.stripped_strings:
+
+            candidate = re.sub(r"\s+", " ", candidate).strip()
+
+            if candidate == "Listing of Interest":
+                break
+
+            lower = candidate.lower()
+
+            if (
+                lower.startswith("hello")
+                or lower.startswith("listing")
+                or lower.startswith("reference")
+                or lower.startswith("location")
+                or lower.startswith("phone")
+                or lower.startswith("mobile")
+                or lower.startswith("email")
+                or lower.startswith("verified")
+                or lower.startswith("disclaimer")
+                or lower.startswith("view member")
+                or lower.startswith("thank you")
+                or lower.startswith("from:")
+                or lower.startswith("sent:")
+                or lower.startswith("subject:")
+                or lower.startswith("to:")
+            ):
+                continue
+
+            if "@" in candidate:
+                continue
+
+            if len(candidate) > 40:
+                continue
+
+            parts = candidate.split()
+
+            # Only accept names with 2-3 words
+            if len(parts) < 2 or len(parts) > 3:
+                continue
+
+            if any(
+                p.lower() in (
+                    "listing",
+                    "reference",
+                    "phone",
+                    "email",
+                    "location",
+                    "message",
+                )
+                for p in parts
+            ):
+                continue
+
+            name = candidate
+            break
+
+    if name:
+
+        if " " in name:
+            first_name, last_name = name.split(" ", 1)
+        else:
+            first_name = name
+            last_name = ""
+
+    # ------------------------------------------------
+    # EMAIL
+    # ------------------------------------------------
+    email = ""
+
+    m = re.search(r"mailto:([^\"'>]+)", html_body, re.I)
+
+    if m:
+        email = m.group(1).strip()
+
+    # ------------------------------------------------
+    # PHONE
+    # ------------------------------------------------
+    phone = ""
+
+    # Original method - only trust the match if it has enough digits
+    # (URL-encoded hrefs like tel:+1%20651-366-7285 truncate at the %)
+    m = re.search(r"tel:\+?([0-9\-\+\s\(\)]+)", html_body, re.I)
+
+    if m and len(re.sub(r"\D", "", m.group(1))) >= 7:
+        phone = normalize_phone_us_e164(m.group(1))
+
+    # Outlook forwarded / URL-encoded emails
+    if not phone:
+
+        for a in soup.find_all("a", href=True):
+
+            href = unquote(a["href"])
+
+            if href.lower().startswith("tel:"):
+
+                phone = normalize_phone_us_e164(href[4:])
+
+                if phone:
+                    break
+
+    # ------------------------------------------------
+    # LOCATION
+    # ------------------------------------------------
+    location = get_label_value("Location")
+
+    # ------------------------------------------------
+    # LISTING HEADLINE
+    # ------------------------------------------------
+    headline = get_label_value("Listing")
+
+    # ------------------------------------------------
+    # REFERENCE NUMBER
+    # ------------------------------------------------
+    ref_id = get_label_value("Reference Number")
+
+    # ------------------------------------------------
+    # RETURN
+    # ------------------------------------------------
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": "",
+        "headline": headline,
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": "",
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+# ==============================
+# ✅ DealStream (TEXT)
+# ==============================
+def extract_dealstream_text(text_body):
+    txt = text_body.replace("\r", "")
+
+    # Lead name — buyer/inquirer appears after "here is their information" section
+    lead_name = ""
+    m_info = re.search(r"here is their information", txt, re.I)
+    if m_info:
+        after = txt[m_info.end():]
+        m_name = re.search(r"\n\s*([A-Z][A-Za-z' .-]+)\s*\n\s*Broker", after, re.I)
+        if m_name:
+            lead_name = m_name.group(1).strip()
+
+    if not lead_name:
+        # fallback: first capitalized line before "Broker"
+        m_name = re.search(r"\n\s*([A-Z][A-Za-z' .-]+)\s*\n\s*Broker", txt, re.I)
+        if m_name:
+            lead_name = m_name.group(1).strip()
+
+    # Clean any role suffixes just in case
+    lead_name = re.sub(r"\b(Broker|Agent|Owner).*$", "", lead_name, flags=re.I).strip()
+
+    # Split only on the first space
+    parts = lead_name.split(None, 1)
+    first_name = parts[0] if parts else ""
+    last_name = parts[1] if len(parts) > 1 else ""
+
+    # Email (strip out any trailing <mailto:...>)
+    m_email = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", txt)
+    email = m_email.group(0).strip() if m_email else ""
+
+    # Phone
+    m_phone = re.search(r"(\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}", txt)
+    phone = normalize_phone_us_e164(m_phone.group(0)) if m_phone else ""
+
+    # Ref ID
+    m_ref = re.search(r"Reference Number:\s*([0-9]+)", txt, re.I)
+    ref_id = m_ref.group(1).strip() if m_ref else ""
+
+    return {
+        "source": "dealstream",
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "headline": "",
+        "listing_url": ""
+    }
+
+# ==============================
+# ✅ BizBuySell (HTML) — Nested DOM Template
+# Handles the newer BizBuySell HTML emails that store
+# values inside <span style="display:block"> elements.
+#
+# This parser is intentionally separate from the legacy
+# BizBuySell HTML parser so changes here cannot break
+# older email templates.
+# ==============================
+
+def extract_bizbuysell_html_nested(html_body):
+
+    soup = BeautifulSoup(html.unescape(html_body), "html.parser")
+
+    fields = {}
+
+    # -------------------------
+    # Read labeled fields
+    # -------------------------
+
+    VALID_FIELDS = {
+        "Contact Name",
+        "Contact Email",
+        "Contact Phone",
+        "Contact Zip",
+        "Able to Invest",
+        "Purchase Within",
+        "Comments",
+    }
+
+    for b in soup.find_all("b"):
+
+        label = b.get_text(" ", strip=True).replace(":", "").strip()
+
+        if label not in VALID_FIELDS:
+            continue
+
+        td = b.find_parent("td")
+
+        if not td:
+            continue
+
+        # Preferred Outlook layout:
+        # <b>Contact Name</b>:<span style="display:block">John Smith</span>
+
+        span = td.find(
+            "span",
+            style=lambda s: s and "display:block" in s.lower()
+        )
+
+        if span:
+            value = span.get_text(" ", strip=True).strip()
+
+            if value:
+                fields[label] = value
+                continue
+
+        # Fallback for any future template changes
+        text = td.get_text(" ", strip=True)
+
+        text = re.sub(
+            rf"^{re.escape(label)}\s*:\s*",
+            "",
+            text,
+            flags=re.I,
+        ).strip()
+
+        if text:
+            fields[label] = text
+
+    # -------------------------
+    # Headline
+    # -------------------------
+
+    headline = ""
+
+    m = re.search(
+        r"You.?ve received a new lead regarding your listing:\s*(.*?)Listing ID",
+        soup.get_text("\n", strip=True),
+        re.I | re.S,
+    )
+
+    if m:
+        headline = re.sub(r"\s+", " ", m.group(1)).strip()
+
+    # -------------------------
+    # Listing ID
+    # -------------------------
+
+    listing_id = ""
+
+    m = re.search(
+        r"Listing ID\s*:?\s*(\d+)",
+        soup.get_text("\n", strip=True),
+        re.I,
+    )
+
+    if m:
+        listing_id = m.group(1)
+
+    # -------------------------
+    # Ref ID
+    # -------------------------
+
+    ref_id = ""
+
+    m = re.search(
+        r"Ref ID\s*:?\s*([A-Za-z0-9\-]+)",
+        soup.get_text("\n", strip=True),
+        re.I,
+    )
+
+    if m:
+        ref_id = m.group(1)
+
+    # -------------------------
+    # Contact
+    # -------------------------
+
+    full_name = fields.get("Contact Name", "")
+
+    if full_name:
+        parts = full_name.split(None, 1)
+        first_name = parts[0]
+        last_name = parts[1] if len(parts) > 1 else ""
+    else:
+        first_name = ""
+        last_name = ""
+
+    email = fields.get("Contact Email", "")
+
+    m = re.search(
+        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+        email,
+    )
+
+    email = m.group(0) if m else ""
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": normalize_phone_us_e164(fields.get("Contact Phone", "")),
+        "ref_id": ref_id,
+        "listing_id": listing_id,
+        "headline": headline,
+        "contact_zip": fields.get("Contact Zip", ""),
+        "investment_amount": fields.get("Able to Invest", ""),
+        "purchase_timeline": fields.get("Purchase Within", ""),
+        "comments": clean_comments_block(fields.get("Comments", "")),
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": "",
+    }
+
+
+# ==============================
+# ✅ BizBuySell (HTML) — Universal Parser
+# Supports all known BizBuySell HTML templates
+# ==============================
+
+def extract_bizbuysell_html(html_body):
+    soup = BeautifulSoup(html.unescape(html_body), "html.parser")
+    text_content = soup.get_text("\n", strip=True)
+
+    # Remove footer
+    text_content = re.split(
+        r"Unsubscribe|Email Preferences|Privacy Notice|This system email was sent to you by BizBuySell",
+        text_content,
+        flags=re.I,
+    )[0]
+
+    # -------------------------
+    # Headline
+    # -------------------------
+
+    headline = ""
+
+    m = re.search(
+        r"You.?ve received a new lead regarding your listing:\s*(.*?)\s*(?:Listing ID|Ref ID|Inquirer)",
+        text_content,
+        re.I | re.S,
+    )
+
+    if m:
+        headline = re.sub(r"\s+", " ", m.group(1)).strip()
+
+    if not headline:
+        for b in soup.find_all(["b", "strong"]):
+            txt = b.get_text(" ", strip=True)
+
+            if not txt:
+                continue
+
+            if re.search(
+                r"contact|listing id|ref id|purchase|comments|inquirer",
+                txt,
+                re.I,
+            ):
+                continue
+
+            if len(txt) > 10:
+                headline = txt
+                break
+
+    # -------------------------
+    # Universal field reader
+    # -------------------------
+
+    def get_field(label):
+
+        txt = text_content.replace("\r", "")
+
+        # Case 1
+        # Contact Name: John Smith
+        m = re.search(
+            rf"{re.escape(label)}\s*:\s*(.+)",
+            txt,
+            re.I,
+        )
+
+        if m:
+            value = m.group(1)
+
+            value = re.split(
+                r"\n(?:Contact Name|Contact Email|Contact Phone|Contact Zip|Able to Invest|Purchase Within|Comments|Headline|Listing ID|Ref ID)",
+                value,
+                flags=re.I,
+            )[0]
+
+            value = re.sub(r"\s+", " ", value).strip()
+
+            if value:
+                return value
+
+        # Case 2
+        # Contact Name
+        # :
+        # John Smith
+
+        lines = [l.strip() for l in txt.split("\n") if l.strip()]
+
+        for i, line in enumerate(lines):
+
+            if line.lower() != label.lower():
+                continue
+
+            j = i + 1
+
+            while j < len(lines):
+
+                nxt = lines[j].strip()
+
+                if nxt == ":":
+                    j += 1
+                    continue
+
+                if re.match(
+                    r"^(Contact Name|Contact Email|Contact Phone|Contact Zip|Able to Invest|Purchase Within|Comments|Headline|Listing ID|Ref ID)$",
+                    nxt,
+                    re.I,
+                ):
+                    break
+
+                return nxt
+
+        return ""
+
+    # -------------------------
+    # Contact
+    # -------------------------
+
+    name = get_field("Contact Name")
+
+    if name:
+        parts = name.split(None, 1)
+        first_name = parts[0]
+        last_name = parts[1] if len(parts) > 1 else ""
+    else:
+        first_name = ""
+        last_name = ""
+
+    email = get_field("Contact Email")
+
+    m = re.search(
+        r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
+        email,
+    )
+
+    email = m.group(0) if m else ""
+
+    phone = normalize_phone_us_e164(
+        get_field("Contact Phone")
+    )
+
+    # -------------------------
+    # IDs
+    # -------------------------
+
+    m = re.search(
+        r"Listing ID\s*:?\s*(\d+)",
+        text_content,
+        re.I,
+    )
+
+    listing_id = m.group(1) if m else ""
+
+    m = re.search(
+        r"Ref ID\s*:?\s*([A-Za-z0-9\-]+)",
+        text_content,
+        re.I,
+    )
+
+    ref_id = m.group(1) if m else ""
+
+    # -------------------------
+    # Return
+    # -------------------------
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": listing_id,
+        "headline": headline,
+        "contact_zip": get_field("Contact Zip"),
+        "investment_amount": get_field("Able to Invest"),
+        "purchase_timeline": get_field("Purchase Within"),
+        "comments": clean_comments_block(get_field("Comments")),
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": "",
+    }
+# ==============================
+# ✅ BizBuySell (TEXT) — original pattern
+# ==============================
+def extract_bizbuysell_text(text_body):
+    """
+    Robust BizBuySell TEXT parser:
+      - Values are captured until the next label (handles multiple labels on one line).
+      - Footer after 'Comments:' is trimmed so it doesn't leak into comments.
+    """
+    txt = text_body.replace('\r', '')
+
+    # --- Headline (unchanged) ---
+    headline = ''
+    h_match = re.search(r"regarding your listing:\s*(.*?)\s*Listing ID", txt, re.DOTALL | re.IGNORECASE)
+    if h_match:
+        headline = h_match.group(1).strip()
+
+    # --- Labels & bounded extraction ---
+    labels = [
+        "Contact Name", "Contact Email", "Contact Phone", "Contact Zip",
+        "Able to Invest", "Purchase Within", "Comments", "Listing ID", "Ref ID"
+    ]
+
+    def label_to_re(l):
+        # Tolerate newlines/extra spaces inside labels, e.g. "Contact\nPhone:"
+        return r"\b" + r"\s*".join(map(re.escape, l.split())) + r"\s*:"
+
+    label_union = "|".join(f"({label_to_re(l)})" for l in labels)
+    label_re = re.compile(label_union, flags=re.IGNORECASE)
+
+    def _norm(s): return re.sub(r"\s+", "", s).lower()
+    canon_map = {_norm(l): l for l in labels}
+
+    matches = []
+    for m in label_re.finditer(txt):
+        matched = m.group(0)
+        label_no_colon = re.sub(r":\s*$", "", matched)
+        label_norm = _norm(re.sub(r"\s+", " ", label_no_colon))
+        canon = canon_map.get(label_norm)
+        if canon:
+            matches.append((canon, m.start(), m.end()))
+
+    fields = {}
+    for i, (label, start, end) in enumerate(matches):
+        nxt_start = matches[i + 1][1] if i + 1 < len(matches) else len(txt)
+        val = txt[end:nxt_start].strip()
+        # Ref ID sometimes includes a stray header; strip it
+        if label == "Ref ID":
+            val = re.sub(r'Inquirer.?s Information', '', val, flags=re.IGNORECASE).strip()
+        fields[label] = val
+
+    # --- Normalize/clean fields ---
+    name = fields.get("Contact Name", "").strip()
+    first_name, last_name = (name.split(' ', 1) if ' ' in name else (name, ''))
+
+    # CHANGED: extract only the first real email token from the segment
+    email_raw = fields.get("Contact Email", "").strip()
+    m_email = re.search(r'(?<!/)[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}', email_raw)
+    email = m_email.group(0) if m_email else (email_raw.split()[0] if email_raw else "")
+
+    # CHANGED: extract only the first phone token from the segment, then normalize
+    phone_block = fields.get("Contact Phone", "")
+    m_phone = re.search(r'(\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}', phone_block)
+    phone = normalize_phone_us_e164(m_phone.group(0) if m_phone else phone_block)
+
+    # Listing ID → first number if extra text exists
+    listing_id_raw = fields.get("Listing ID", "").strip()
+    m_id = re.search(r'\d+', listing_id_raw)
+    listing_id = m_id.group(0) if m_id else listing_id_raw
+
+    ref_id = fields.get("Ref ID", "").strip()
+    contact_zip = fields.get("Contact Zip", "").strip()
+    investment_amount = fields.get("Able to Invest", "").strip()
+    purchase_timeline = fields.get("Purchase Within", "").strip()
+
+    # --- Comments: strip BizBuySell footer + bracketed URLs, then run generic cleaner ---
+    def _trim_bizbuysell_footer(s: str) -> str:
+        if not s:
+            return ""
+        # Remove bracketed URLs like [https://...]
+        s = re.sub(r'\[https?://[^\]]+\]', '', s)
+        # Cut off known footer markers
+        footer_markers = [
+            r'You can reply directly to this email',
+            r'We take our lead quality',
+            r'Thank you,\s*BizBuySell',
+            r'Unsubscribe',
+            r'Email Preferences',
+            r'Terms of Use',
+            r'Privacy Notice',
+            r'Contact Us',
+            r'This system email was sent to you by BizBuySell'
+        ]
+        pat = re.compile(r'(?is)\b(?:' + '|'.join(footer_markers) + r')\b')
+        m = pat.search(s)
+        if m:
+            s = s[:m.start()]
+        return s.strip()
+
+    comments_raw = fields.get("Comments", "").strip()
+    comments = clean_comments_block(_trim_bizbuysell_footer(comments_raw))
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,          # now guaranteed to be just the address
+        "phone": phone,          # handles (832)\n453-6114
+        "ref_id": ref_id,
+        "listing_id": listing_id,
+        "headline": headline,
+        "contact_zip": contact_zip,
+        "investment_amount": investment_amount,
+        "purchase_timeline": purchase_timeline,
+        "comments": comments,
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+# ==============================
+# ✅ BizBuySell (HTML) — New Buyer Lead (FINAL)
+# ==============================
+def extract_bizbuysell_newbuyer_html(html_body):
+
+    soup = BeautifulSoup(html.unescape(html_body), "html.parser")
+    text_content = soup.get_text(" ", strip=True)
+
+    # -----------------------------
+    # HELPER (robust field extraction)
+    # -----------------------------
+    def get_field(label):
+        stag = soup.find(
+            lambda tag: tag.name in ["b", "span"] and label.lower() in tag.get_text(strip=True).lower()
+        )
+
+        if stag:
+            # --- Listing ID (special: inside link)
+            if label.lower() == "listing id":
+                link = stag.find_next("a")
+                if link:
+                    return link.get_text(strip=True)
+
+            # --- Standard next span
+            nxt = stag.find_next("span")
+            if nxt:
+                return nxt.get_text(strip=True)
+
+            # --- Inline span fallback
+            td = stag.find_parent("td")
+            if td:
+                spans = td.find_all("span")
+                if spans:
+                    return spans[-1].get_text(strip=True)
+
+                raw = td.get_text(" ", strip=True)
+                return re.sub(rf"{label}\s*:", "", raw, flags=re.I).strip()
+
+        # --- Regex fallback (safe)
+        m = re.search(
+            rf"{label}\s*:\s*(.+?)(?=\s[A-Z][a-z]+\s*:|$)",
+            text_content,
+            re.I
+        )
+        return m.group(1).strip() if m else ""
+
+    # -----------------------------
+    # NAME (clean + bulletproof)
+    # -----------------------------
+    name = get_field("Contact Name")
+
+    # Remove label bleed (e.g. "Contact Email")
+    name = re.sub(r'\bContact\b.*$', '', name, flags=re.I).strip()
+
+    # Remove anything after unexpected caps label
+    name = re.split(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s*:\b', name)[0].strip()
+
+    first_name, last_name = (name.split(" ", 1) if " " in name else (name, ""))
+
+    # -----------------------------
+    # EMAIL (strict regex cleanup)
+    # -----------------------------
+    raw_email = get_field("Contact Email")
+    m_email = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", raw_email)
+    email = m_email.group(0) if m_email else ""
+
+    # -----------------------------
+    # PHONE (clean + normalized)
+    # -----------------------------
+    raw_phone = get_field("Contact Phone")
+    phone = normalize_phone_us_e164(raw_phone)
+
+    # -----------------------------
+    # LISTING ID → REF ID
+    # -----------------------------
+    listing_id = get_field("Listing ID")
+    ref_id = listing_id if listing_id else ""
+
+    # -----------------------------
+    # COMMENTS (hard stop cleanup)
+    # -----------------------------
+    raw_comments = get_field("Comments")
+
+    # Stop at known footer / junk phrases
+    raw_comments = re.split(
+        r"(We take our lead quality|Thank you|BizBuySell|Maximize Your Listing|Powered)",
+        raw_comments,
+        flags=re.I
+    )[0]
+
+    comments = clean_comments_block(raw_comments)
+
+    # -----------------------------
+    # RETURN
+    # -----------------------------
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": "",
+        "headline": "",
+        "contact_zip": get_field("Contact Zip"),
+        "investment_amount": get_field("Able to Invest"),
+        "purchase_timeline": get_field("Purchase Within"),
+        "comments": comments,
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+# ==============================
+# ✅ BusinessesForSale (TEXT)
+# ==============================
+def extract_businessesforsale_text(text_body):
+
+    # ------------------------------------------------
+    # Normalize line endings and trim whitespace
+    # ------------------------------------------------
+    try:
+        text_body = text_body or ""
+        lines = text_body.replace("\r", "").split("\n")
+        lines = [line.strip() for line in lines]
+        full_text = "\n".join(lines)
+    except Exception:
+        full_text = text_body or ""
+
+    # ------------------------------------------------
+    # Initialize safe defaults
+    # ------------------------------------------------
+    ref_id = ""
+    headline = ""
+    listing_url = ""
+    first_name = ""
+    last_name = ""
+    email = ""
+    phone = ""
+    address = ""
+    city = ""
+    state = ""
+    country = ""
+    contact_zip = ""
+    comments = ""
+
+    # ------------------------------------------------
+    # Extract Listing Reference / Headline / URL
+    # ------------------------------------------------
+    try:
+
+        block = re.search(
+            r"(?is)your\s+listing\s+ref\s*:\s*([A-Za-z0-9\-]+)\s+(.+?)\s*\n(https?://\S+)",
+            full_text
+        )
+
+        if block:
+            ref_id = (block.group(1) or "").strip()
+            headline = (block.group(2) or "").strip()
+            listing_url = (block.group(3) or "").strip()
+
+        else:
+            m_ref = re.search(
+                r"(?is)your\s+listing\s+ref\s*:\s*([A-Za-z0-9\-]+)",
+                full_text
+            )
+
+            if m_ref:
+                ref_id = (m_ref.group(1) or "").strip()
+
+                start = m_ref.end()
+                remaining = full_text[start:]
+
+                m_head = re.search(r"\s*([^\n]+)", remaining)
+                if m_head:
+                    headline = (m_head.group(1) or "").strip()
+
+                m_url = re.search(r"https?://\S+", remaining)
+                if m_url:
+                    listing_url = (m_url.group(0) or "").strip()
+
+    except Exception:
+        pass
+
+    # ------------------------------------------------
+    # Extract Buyer Lead Block (prevents footer parsing)
+    # ------------------------------------------------
+    try:
+
+        lead_block_match = re.search(
+            r"Name:\s*.*?Email:\s*[^\n]*",
+            full_text,
+            re.S
+        )
+
+        lead_block = lead_block_match.group(0) if lead_block_match else ""
+
+    except Exception:
+        lead_block = ""
+
+    # ------------------------------------------------
+    # Safe field extractor (allows empty values)
+    # ------------------------------------------------
+    def get_field(label):
+
+        try:
+            m = re.search(
+                rf"{re.escape(label)}:\s*([^\n]*)",
+                lead_block,
+                re.I
+            )
+
+            return (m.group(1) or "").strip() if m else ""
+
+        except Exception:
+            return ""
+
+    # ------------------------------------------------
+    # Contact Name
+    # ------------------------------------------------
+    try:
+
+        name = get_field("Name")
+
+        if name and " " in name:
+            first_name, last_name = name.split(" ", 1)
+
+        elif name:
+            first_name = name
+            last_name = ""
+
+    except Exception:
+        pass
+
+    # ------------------------------------------------
+    # Contact Email / Phone
+    # ------------------------------------------------
+    try:
+        email = get_field("Email")
+    except Exception:
+        email = ""
+
+    try:
+        raw_phone = get_field("Tel")
+        phone = normalize_phone_us_e164(raw_phone) if raw_phone else ""
+    except Exception:
+        phone = ""
+
+    # ------------------------------------------------
+    # Buyer Address Fields (sometimes missing)
+    # ------------------------------------------------
+    try:
+
+        addr1 = get_field("Address1")
+        addr2 = get_field("Address2")
+
+        city = get_field("City")
+        state = get_field("County")
+        contact_zip = get_field("Postcode")
+        country = get_field("Country")
+
+        if addr1 and addr2:
+            address = f"{addr1}, {addr2}"
+        else:
+            address = addr1 or ""
+
+    except Exception:
+        pass
+
+    # ------------------------------------------------
+    # Extract Buyer Message / Comments
+    # ------------------------------------------------
+    try:
+
+        cmt = re.search(
+            r"(?is)has received the following message:\s*(.+?)\s*Name\s*:",
+            full_text
+        )
+
+        if cmt:
+            comments = (cmt.group(1) or "").strip()
+
+        comments = clean_comments_block(comments)
+
+    except Exception:
+        comments = ""
+
+    # ------------------------------------------------
+    # Return Parsed Lead
+    # ------------------------------------------------
+    return {
+        "first_name": first_name or "",
+        "last_name": last_name or "",
+        "email": email or "",
+        "phone": phone or "",
+        "ref_id": ref_id or "",
+        "listing_id": "",
+        "headline": headline or "",
+        "address": address or "",
+        "city": city or "",
+        "state": state or "",
+        "country": country or "",
+        "contact_zip": contact_zip or "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": comments or "",
+        "listing_url": listing_url or "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+    
+# ==============================
+# ✅ Murphy Business (HTML) — original pattern
+# ==============================
+def extract_murphy_html(html_body):
+    soup = BeautifulSoup(html.unescape(html_body), "html.parser")
+    text = soup.get_text(separator="\n")
+
+    headline = ""
+
+    def get_after(label):
+        """Match label followed by colon and capture its value (until newline or <br>)."""
+        pattern = rf"{re.escape(label)}\s*:\s*([^\n\r<]+)"
+        m = re.search(pattern, text, re.IGNORECASE)
+        return m.group(1).strip() if m else ""
+
+    # --- Base fields ---
+    name = get_after("Name")
+    first_name, last_name = name.split(" ", 1) if " " in name else (name, "")
+
+    email = get_after("Email")
+    contact_zip = get_after("ZIP/Postal Code")
+    phone = normalize_phone_us_e164(get_after("Phone"))
+    services = get_after("Services Interested In")
+    heard = get_after("How did you hear about us?")
+    if not heard:  # in some variants the question mark is omitted
+        heard = get_after("How did you hear about us")
+
+    # --- Listing / Ref ID ---
+    # Some versions include "Listing Number:" or "Listing ID:"
+    ref_id = get_after("Listing Number") or get_after("Listing ID")
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,                    # now populated if listing number exists
+        "listing_id": "",
+        "headline": headline,
+        "contact_zip": contact_zip,
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": "",
+        "listing_url": "",
+        "services_interested_in": services,  # captured correctly
+        "heard_about": heard                 # captured correctly
+    }
+
+# ==============================
+# ✅ Murphy Business (TEXT) — original pattern
+# ==============================
+def extract_murphy_text(text_body):
+    text = text_body.replace('\r', '')
+
+    headline = ''
+
+    def get_after(label):
+        """Generic label finder that captures text until newline."""
+        pattern = rf"{re.escape(label)}\s*:\s*([^\n\r]+)"
+        m = re.search(pattern, text, re.IGNORECASE)
+        return m.group(1).strip() if m else ''
+
+    # --- Base fields ---
+    name = get_after("Name")
+    first_name, last_name = name.split(' ', 1) if ' ' in name else (name, '')
+
+    email = get_after("Email")
+    contact_zip = get_after("ZIP/Postal Code")
+    phone = normalize_phone_us_e164(get_after("Phone"))
+    services = get_after("Services Interested In")
+    heard = get_after("How did you hear about us?")
+    if not heard:
+        heard = get_after("How did you hear about us")  # fallback without question mark
+
+    # --- Listing / Ref ID ---
+    ref_id = get_after("Listing Number") or get_after("Listing ID")
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,                    # ✅ populated when listing number exists
+        "listing_id": "",
+        "headline": headline,
+        "contact_zip": contact_zip,
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": "",
+        "listing_url": "",
+        "services_interested_in": services,  # ✅ preserved
+        "heard_about": heard                 # ✅ preserved
+    }
+
+
+# ==============================
+# ✅ BusinessBroker.net (HTML) — original pattern + address fields
+# ==============================
+def extract_businessbroker_html(html_body):
+    soup = BeautifulSoup(html.unescape(html_body), "html.parser")
+    text = soup.get_text(separator="\n")
+
+    def get_after(label):
+        pattern = rf"{re.escape(label)}\s*:\s*([^\n\r]+)"
+        m = re.search(pattern, text, re.IGNORECASE)
+        return m.group(1).strip() if m else ''
+
+    def get_after_multi(labels):
+        for lab in labels:
+            v = get_after(lab)
+            if v:
+                return v
+        return ''
+
+    headline    = get_after("Listing Header")
+    listing_id  = get_after("BusinessBroker.net Listing Number")
+    ref_id      = get_after("Your Internal Listing Number")
+    first_name  = get_after("First Name")
+    last_name   = get_after("Last Name")
+    email       = get_after("Email")
+    phone       = normalize_phone_us_e164(get_after("Phone"))
+    contact_zip = get_after_multi(["Zip", "ZIP", "Zip/Postal Code"])
+    city        = get_after("City")
+    state       = get_after("State")
+    country     = get_after("Country")
+    address     = get_after_multi(["Address", "Address 1", "Address Line 1"])
+
+    comments = ''
+    cmt = re.search(r"Comments\s*:\s*(.*?)(?:\n[-_]{3,}|\Z)", text, re.IGNORECASE | re.DOTALL)
+    if cmt:
+        comments = cmt.group(1).strip()
+    comments = clean_comments_block(comments)
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": listing_id,
+        "headline": headline,
+        "address": address,
+        "city": city,
+        "state": state,
+        "country": country,
+        "contact_zip": contact_zip,
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": comments,
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+# ==============================
+# ✅ BusinessBroker.net (TEXT) — original pattern + address fields
+# ==============================
+def extract_businessbroker_text(text_body):
+    text = text_body.replace('\r', '')
+
+    def get_after(label):
+        pattern = rf"{re.escape(label)}\s*:\s*([^\n\r]+)"
+        m = re.search(pattern, text, re.IGNORECASE)
+        return m.group(1).strip() if m else ''
+
+    def get_after_multi(labels):
+        for lab in labels:
+            v = get_after(lab)
+            if v:
+                return v
+        return ''
+
+    headline    = get_after("Listing Header")
+    listing_id  = get_after("BusinessBroker.net Listing Number")
+    ref_id      = get_after("Your Internal Listing Number")
+    first_name  = get_after("First Name")
+    last_name   = get_after("Last Name")
+    email       = get_after("Email")
+    phone       = normalize_phone_us_e164(get_after("Phone"))
+    contact_zip = get_after_multi(["Zip", "ZIP", "Zip/Postal Code"])
+    city        = get_after("City")
+    state       = get_after("State")
+    country     = get_after("Country")
+    address     = get_after_multi(["Address", "Address 1", "Address Line 1"])
+
+    comments = ''
+    cmt = re.search(r"Comments\s*:\s*(.*?)(?:\n[-_]{3,}|\Z)", text, re.IGNORECASE | re.DOTALL)
+    if cmt:
+        comments = cmt.group(1).strip()
+    comments = clean_comments_block(comments)
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": listing_id,
+        "headline": headline,
+        "address": address,
+        "city": city,
+        "state": state,
+        "country": country,
+        "contact_zip": contact_zip,
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": comments,
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+# ==============================
+# ✅ FCBB (HTML) — First Choice Business Brokers (robust)
+# ==============================
+def extract_fcbb_html(html_body):
+    soup = BeautifulSoup(html.unescape(html_body), "html.parser")
+
+    label_map = {
+        "First Name": "first_name",
+        "Last Name": "last_name",
+        "Email Address": "email",
+        "Phone Number": "phone",
+        "Address": "address",
+        "City": "city",
+        "State": "state",
+        "Postal Code": "contact_zip",
+        "Listing Number": "ref_id",   # ⚡ switched to ref_id
+        "Listing Description": "listing_description",
+        "Domain": "domain",
+        "Originating Website": "originating_website",
+        "Current Site Page URL": "current_site_page_url",
+    }
+
+    out = {k: "" for k in set(label_map.values())}
+
+    # --- Standard format (label-based) ---
+    for strong in soup.find_all("strong"):
+        label_raw = strong.get_text(" ", strip=True).rstrip(":").strip()
+        key = label_map.get(label_raw)
+        if not key:
+            continue
+        td_label = strong.find_parent("td")
+        tr = td_label.find_parent("tr") if td_label else None
+        value = ""
+        if tr:
+            tds = tr.find_all("td")
+            if len(tds) >= 2:
+                cell = tds[-1]
+                cell_text = cell.get_text(" ", strip=True)
+                if key in ("originating_website", "current_site_page_url"):
+                    url = first_http_url(cell_text)
+                    if not url:
+                        a = cell.find("a", href=True)
+                        if a:
+                            url = first_http_url(a.get_text(strip=True)) or a["href"]
+                    value = url
+                elif key == "email":
+                    a = cell.find("a", href=True)
+                    if a and a["href"].lower().startswith("mailto:"):
+                        value = a.get_text(strip=True) or a["href"].split(":", 1)[-1]
+                    else:
+                        value = cell_text
+                elif key == "phone":
+                    a = cell.find("a", href=True)
+                    if a and a["href"].lower().startswith("tel:"):
+                        value = a.get_text(strip=True) or a["href"].split(":", 1)[-1]
+                    else:
+                        value = cell_text
+                else:
+                    value = cell_text
+        if key == "city":
+            value = value.rstrip(", ")
+        out[key] = (value or "").strip()
+
+    # --- Fallback for stripped-down <p> block format ---
+    if not any(v for k, v in out.items() if k in ("first_name","last_name","ref_id","email","phone")):
+        ps = [p.get_text(" ", strip=True) for p in soup.find_all("p") if p.get_text(strip=True)]
+
+        if ps:
+            parts = ps[0].split(" ", 1)
+            out["first_name"] = parts[0]
+            out["last_name"] = parts[1] if len(parts) > 1 else ""
+
+        if len(ps) > 1:
+            listing_line = ps[1]
+            m = re.match(r"(\d{3}-\d+)\s+(.*)", listing_line)
+            if m:
+                out["ref_id"] = m.group(1)                # ⚡ now stored as ref_id
+                out["listing_description"] = m.group(2)
+
+        mailto = soup.find("a", href=lambda h: h and h.lower().startswith("mailto:"))
+        if mailto:
+            out["email"] = mailto.get_text(strip=True)
+
+        tel = soup.find("a", href=lambda h: h and h.lower().startswith("tel:"))
+        if tel and tel.get("href"):
+            out["phone"] = normalize_phone_us_e164(tel.get("href").split(":")[-1])
+
+    out["phone"] = normalize_phone_us_e164(out.get("phone", ""))
+    if out.get("domain"):
+        out["domain"] = derive_domain(out["domain"])
+    else:
+        out["domain"] = derive_domain(out.get("originating_website")) or derive_domain(out.get("current_site_page_url"))
+
+    headline = out.get("listing_description", "")
+
+    return {
+        "first_name": out.get("first_name", ""),
+        "last_name": out.get("last_name", ""),
+        "email": out.get("email", ""),
+        "phone": out.get("phone", ""),
+        "ref_id": out.get("ref_id", ""),        # ⚡ now populated
+        "listing_id": "",                       # left empty
+        "headline": headline,
+        "listing_description": headline,
+        "address": out.get("address", ""),
+        "city": out.get("city", ""),
+        "state": out.get("state", ""),
+        "contact_zip": out.get("contact_zip", ""),
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": "",
+        "listing_url": "",
+        "originating_website": out.get("originating_website", ""),
+        "current_site_page_url": out.get("current_site_page_url", ""),
+        "domain": out.get("domain", ""),
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+
+# ==============================
+# ✅ FCBB (TEXT) — First Choice Business Brokers (robust)
+# ==============================
+def extract_fcbb_text(text_body):
+    txt = text_body.replace("\r", "")
+
+    # ----------------------------
+    # Try standard label-based FCBB format first
+    # ----------------------------
+    labels = [
+        "Domain", "Listing Number", "Listing Description",
+        "First Name", "Last Name", "Email Address", "Phone Number",
+        "Address", "City", "Postal Code", "Originating Website", "Current Site Page URL"
+    ]
+    label_group = "|".join(map(re.escape, labels))
+    pattern = rf"(?P<label>{label_group}):\s*(?P<value>.*?)(?=(?:{label_group}):|$)"
+
+    found = {}
+    for m in re.finditer(pattern, re.sub(r"\s+", " ", txt), flags=re.S):
+        lab = m.group("label")
+        val = m.group("value").strip()
+        found[lab] = val
+
+    if found:  # ✅ Structured label-based parse
+        first_name = found.get("First Name", "")
+        last_name  = found.get("Last Name", "")
+        email      = found.get("Email Address", "")
+        phone      = normalize_phone_us_e164(found.get("Phone Number", ""))
+        address    = found.get("Address", "")
+        city       = (found.get("City", "") or "").rstrip(", ")
+        zip_code   = found.get("Postal Code", "")
+
+        ref_id = (found.get("Listing Number", "") or "").strip()
+        ref_id = re.split(r"\s+Listing Description\s*:", ref_id, 1)[0].strip()
+
+        headline   = found.get("Listing Description", "").strip()
+        originating_website   = first_http_url(found.get("Originating Website", ""))
+        current_site_page_url = first_http_url(found.get("Current Site Page URL", ""))
+        domain_label = found.get("Domain", "")
+        domain = derive_domain(domain_label) or derive_domain(originating_website) or derive_domain(current_site_page_url)
+
+        return {
+            "first_name": first_name,
+            "last_name": last_name,
+            "email": email,
+            "phone": phone,
+            "ref_id": ref_id,
+            "listing_id": "",
+            "headline": headline,
+            "listing_description": headline,
+            "address": address,
+            "city": city,
+            "state": "",
+            "contact_zip": zip_code,
+            "investment_amount": "",
+            "purchase_timeline": "",
+            "comments": "",
+            "listing_url": "",
+            "originating_website": originating_website,
+            "current_site_page_url": current_site_page_url,
+            "domain": domain,
+            "services_interested_in": "",
+            "heard_about": ""
+        }
+
+    # ----------------------------
+    # Fallback: freeform "alternate" FCBB text
+    # ----------------------------
+    lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+
+    # 🚫 Filter out noise (image links, tracking pixels, disclaimers)
+    noise_patterns = [
+        r"^\[https?://",       # square-bracketed URLs
+        r"^First Choice Business Brokers", 
+        r"© 20\d{2} First Choice",
+        r"^Alert -",            # NDA alerts
+    ]
+    clean_lines = []
+    for ln in lines:
+        if any(re.match(pat, ln, re.I) for pat in noise_patterns):
+            continue
+        clean_lines.append(ln)
+
+    out = {"first_name": "", "last_name": "", "email": "", "phone": "", "ref_id": "", "headline": ""}
+
+    if clean_lines:
+        # Name
+        name = clean_lines[0]
+        parts = name.split(" ", 1)
+        out["first_name"] = parts[0]
+        out["last_name"] = parts[1] if len(parts) > 1 else ""
+
+    # ID + headline
+    for ln in clean_lines[1:]:
+        m = re.match(r"(\d{3}-\d+)\s+(.*)", ln)
+        if m:
+            out["ref_id"] = m.group(1)
+            out["headline"] = m.group(2)
+            break
+
+    # Phone
+    for ln in clean_lines:
+        if re.search(r"\d{3}[-)\s]\d{3}", ln):  # crude phone pattern
+            out["phone"] = normalize_phone_us_e164(ln)
+            break
+
+    # Email
+    for ln in clean_lines:
+        m_email = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", ln)
+        if m_email:
+            out["email"] = m_email.group(0)
+            break
+
+    return {
+        "first_name": out["first_name"],
+        "last_name": out["last_name"],
+        "email": out["email"],
+        "phone": out["phone"],
+        "ref_id": out["ref_id"],
+        "listing_id": "",
+        "headline": out["headline"],
+        "listing_description": out["headline"],
+        "address": "",
+        "city": "",
+        "state": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": "",
+        "listing_url": "",
+        "originating_website": "",
+        "current_site_page_url": "",
+        "domain": "fcbb.com",   # default fallback
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+# ==============================
+# ✅ Restaurants-For-Sale (HTML)
+# ==============================
+def extract_restaurantsforsale_html(html_body):
+    soup = BeautifulSoup(html.unescape(html_body), "html.parser")
+    text = soup.get_text("\n", strip=True)
+
+    # --- Name ---
+    m_name = re.search(r"Name\s*\n([^\n]+)", text, re.I)
+    full_name = (m_name.group(1).strip() if m_name else "")
+    if " " in full_name:
+        first_name, last_name = full_name.split(" ", 1)
+    else:
+        first_name, last_name = full_name, ""
+
+    # --- Email ---
+    m_email = re.search(r"Email\s*\n([^\n]+)", text, re.I)
+    email = m_email.group(1).strip() if m_email else ""
+
+    # --- Phone ---
+    m_phone = re.search(r"Phone Number\s*\n([^\n]+)", text, re.I)
+    raw_phone = m_phone.group(1).strip() if m_phone else ""
+    phone = normalize_phone_us_e164(raw_phone)
+
+    # --- Message & Ref ID ---
+    m_msg = re.search(r"Message\s*\n(.+)$", text, re.I | re.S)
+    msg = m_msg.group(1).strip() if m_msg else ""
+
+    # ref_id = text after "regarding"
+    m_ref = re.search(r"regarding\s+([A-Za-z0-9\-]+)", msg, re.I)
+    ref_id = m_ref.group(1).strip() if m_ref else ""
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": "",
+        "headline": "",
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": msg,
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+
+# ==============================
+# ✅ Restaurants-For-Sale (TEXT)
+# ==============================
+def extract_restaurantsforsale_text(text_body):
+    txt = text_body.replace("\r", "").strip()
+
+    # --- Name ---
+    m_name = re.search(r"Name\s*\n([^\n]+)", txt, re.I)
+    full_name = (m_name.group(1).strip() if m_name else "")
+    if " " in full_name:
+        first_name, last_name = full_name.split(" ", 1)
+    else:
+        first_name, last_name = full_name, ""
+
+    # --- Email ---
+    m_email = re.search(r"Email\s*\n([^\n]+)", txt, re.I)
+    email = m_email.group(1).strip() if m_email else ""
+
+    # --- Phone ---
+    m_phone = re.search(r"Phone Number\s*\n([^\n]+)", txt, re.I)
+    raw_phone = m_phone.group(1).strip() if m_phone else ""
+    phone = normalize_phone_us_e164(raw_phone)
+
+    # --- Message block ---
+    m_msg = re.search(r"Message\s*\n(.+)$", txt, re.I | re.S)
+    msg = m_msg.group(1).strip() if m_msg else ""
+
+    # --- Ref ID (after "regarding") ---
+    m_ref = re.search(r"regarding\s+([A-Za-z0-9\-]+)", msg, re.I)
+    ref_id = m_ref.group(1).strip() if m_ref else ""
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": "",
+        "headline": "",
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": msg,
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+# ==============================
+# ✅ FranchiseResales.com (TEXT)
+# ==============================
+def extract_franchiseresales_text(text_body):
+    txt = text_body.replace("\r", "").strip()
+
+    # --- Listing title (headline) ---
+    # First line after the reference sentence
+    m_head = re.search(
+        r"in reference to the following listing:\s*\n([^\n]+)",
+        txt,
+        re.I
+    )
+    headline = m_head.group(1).strip() if m_head else ""
+
+    # --- URL ---
+    m_url = re.search(r"URL:\s*(https?://\S+)", txt, re.I)
+    listing_url = m_url.group(1).strip() if m_url else ""
+
+    # --- Internal Listing ID ---
+    m_ref = re.search(r"Internal Listing ID\s*([A-Za-z0-9\-]+)", txt, re.I)
+    ref_id = m_ref.group(1).strip() if m_ref else ""
+
+    # --- Contact fields ---
+    def get_after(label):
+        m = re.search(rf"{re.escape(label)}:\s*([^\n]+)", txt, re.I)
+        return m.group(1).strip() if m else ""
+
+    full_name = get_after("Contact Name")
+    if " " in full_name:
+        first_name, last_name = full_name.split(" ", 1)
+    else:
+        first_name, last_name = full_name, ""
+
+    phone = normalize_phone_us_e164(get_after("Contact Phone"))
+    email = get_after("Contact E-mail")
+    comments = get_after("Contact Message")
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": "",
+        "headline": headline,
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": comments,
+        "listing_url": listing_url,
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+# ====================================
+# ✅ LoopNet (TEXT Email)
+# ====================================
+def extract_loopnet_text(text_body):
+    txt = text_body.replace("\r", "").strip()
+
+    # --- Extract the FROM line ---
+    # Example:
+    # From: Tyler Smith | +1 470-643-7013 | subtosharks@gmail.com | (Listing ID : 38357782)
+    m_from = re.search(
+        r"From:\s*(.+?)\|\s*(.+?)\|\s*([^\|]+?)\|\s*\(Listing ID\s*:\s*([0-9]+)\)",
+        txt,
+        re.I
+    )
+
+    full_name = phone_raw = email = ref_id = ""
+
+    if m_from:
+        full_name = m_from.group(1).strip()
+        phone_raw = m_from.group(2).strip()
+        email = m_from.group(3).strip()
+        ref_id = m_from.group(4).strip()
+
+    # --- Name Split ---
+    if " " in full_name:
+        first_name, last_name = full_name.split(" ", 1)
+    else:
+        first_name, last_name = full_name, ""
+
+    # --- Phone ---
+    phone = normalize_phone_us_e164(phone_raw)
+
+    # No buyer message in LoopNet leads
+    comments = ""
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": "",
+        "headline": "",
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": comments,
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+# ====================================
+# ✅ LoopNet (HTML Email)
+# ====================================
+def extract_loopnet_html(html_body):
+    soup = BeautifulSoup(html.unescape(html_body), "html.parser")
+    text = soup.get_text("\n", strip=True)
+
+    # Reuse the text parser
+    return extract_loopnet_text(text)
+
+# ====================================
+# ✅ Crexi (TEXT Email)
+# ====================================
+def extract_crexi_text(text_body):
+    txt = text_body.replace("\r", "").strip()
+
+    # --- First sentence: Name + Ref ID ---
+    # Format:
+    # John Doe has downloaded the flyer for Some Listing - ABC-123-XX in Town.
+    m_head = re.search(
+        r"^([A-Za-z .'-]+)\s+has downloaded the flyer for\s+.+?-+\s*([A-Za-z0-9\-]+)",
+        txt,
+        re.I | re.M
+    )
+
+    full_name = ""
+    ref_id = ""
+
+    if m_head:
+        full_name = m_head.group(1).strip()
+        ref_id = m_head.group(2).strip()
+
+    # --- Name split ---
+    if " " in full_name:
+        first_name, last_name = full_name.split(" ", 1)
+    else:
+        first_name, last_name = full_name, ""
+
+    # --- Email ---
+    m_email = re.search(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", txt)
+    email = m_email.group(1).strip() if m_email else ""
+
+    # --- Phone ---
+    m_phone = re.search(r"(\+?\d[\d\.\-\s]{7,}\d)", txt)
+    phone_raw = m_phone.group(1).strip() if m_phone else ""
+    phone = normalize_phone_us_e164(phone_raw)
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": "",
+        "headline": "",
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": "",
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+# ====================================
+# ✅ Crexi (HTML Email)
+# ====================================
+def extract_crexi_html(html_body):
+    soup = BeautifulSoup(html.unescape(html_body), "html.parser")
+    text = soup.get_text("\n", strip=True)
+    return extract_crexi_text(text)
+
+
+# ==============================
+# ✅ BizListPro (HTML)
+# ==============================
+def extract_bizlistpro_html(html_body):
+
+    soup = BeautifulSoup(html_body, "html.parser")
+    text = soup.get_text("\n")
+
+    # ------------------------------------------------
+    # helper to get values after labels
+    # ------------------------------------------------
+    def get_label_value(label):
+        m = re.search(rf"{re.escape(label)}\s*:\s*(.+)", text, re.I)
+        return m.group(1).strip() if m else ""
+
+    # ------------------------------------------------
+    # HEADLINE + REF ID
+    # ------------------------------------------------
+    headline = ""
+    ref_id = ""
+
+    link = soup.find("a")
+
+    if link:
+        listing_text = link.get_text(strip=True)
+
+        m = re.search(r"(.+?)#([A-Za-z0-9_-]+)", listing_text)
+
+        if m:
+            headline = m.group(1)
+            ref_id = m.group(2)
+
+            # clean trailing dashes/spaces
+            headline = re.sub(r"[-\s]+$", "", headline).strip()
+
+        else:
+            headline = listing_text.strip()
+
+    # ------------------------------------------------
+    # NAME
+    # ------------------------------------------------
+    first_name = ""
+    last_name = ""
+
+    name = get_label_value("Name")
+
+    if name:
+
+        if " " in name:
+            first_name, last_name = name.split(" ", 1)
+        else:
+            first_name = name
+            last_name = ""
+
+    # ------------------------------------------------
+    # COMPANY
+    # ------------------------------------------------
+    company = get_label_value("Company")
+
+    # ------------------------------------------------
+    # EMAIL
+    # ------------------------------------------------
+    email = get_label_value("Email")
+
+    # ------------------------------------------------
+    # PHONE
+    # ------------------------------------------------
+    phone = normalize_phone_us_e164(get_label_value("Phone"))
+
+    # ------------------------------------------------
+    # MESSAGE
+    # ------------------------------------------------
+    comments = get_label_value("Message")
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        "ref_id": ref_id,
+        "listing_id": "",
+        "headline": headline,
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": comments,
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": "",
+        "company": company
+    }
+
+# ==============================
+# ✅ Transworld / GorillaDash (HTML) — FINAL FINAL FIX
+# ==============================
+def extract_transworld_html(html_body):
+
+    soup = BeautifulSoup(html_body, "html.parser")
+    text = soup.get_text("\n")
+
+    # -----------------------------
+    # SAFE HELPERS
+    # -----------------------------
+    def clean(val):
+        return val.strip() if val else ""
+
+    # 🔥 TRUE FIX: u-col div pairing (Transworld uses side-by-side divs, NOT tr/td pairs)
+    def get_label_value_dom(label):
+        try:
+            rows = soup.find_all("div", class_="u-row")
+
+            for row in rows:
+                # Labels/values live in u-col divs inside an inner display:table div
+                inner = row.find("div", style=lambda s: s and "display: table" in s)
+                cols = inner.find_all("div", class_=lambda c: c and "u-col" in c, recursive=False) if inner else []
+
+                # fallback: try direct children of the row itself
+                if len(cols) < 2:
+                    cols = row.find_all("div", class_=lambda c: c and "u-col" in c, recursive=False)
+
+                if len(cols) >= 2:
+                    label_text = cols[0].get_text(" ", strip=True)
+                    value_text = cols[1].get_text(" ", strip=True)
+
+                    # strict match (prevents "Agent Name" / "Listing Title" collisions)
+                    if re.sub(r"\s+", " ", label_text.lower()).strip() == label.lower():
+                        return value_text
+
+            return ""
+        except:
+            return ""
+
+    # 🛟 fallback (rarely needed but safe)
+    def get_label_value_text(label):
+        try:
+            lines = [l.strip() for l in text.split("\n") if l.strip()]
+
+            for i, line in enumerate(lines):
+                if re.sub(r"\s+", " ", line.lower()).strip() == label.lower():
+
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1]
+
+                        # avoid grabbing another label
+                        if re.match(r"^[A-Z][A-Za-z ]+$", next_line):
+                            return ""
+
+                        return next_line.strip()
+
+            return ""
+        except:
+            return ""
+
+    # unified getter
+    def get_label_value(label):
+        val = get_label_value_dom(label)
+        if val:
+            return val
+        return get_label_value_text(label)
+
+    # -----------------------------
+    # NAME → split first / last
+    # -----------------------------
+    full_name = get_label_value("Name")
+
+    first_name = ""
+    last_name = ""
+
+    if full_name:
+        parts = full_name.strip().split()
+        first_name = parts[0]
+        last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+    # -----------------------------
+    # EMAIL
+    # -----------------------------
+    email = ""
+    try:
+        m = re.search(r"mailto:([^\"'>]+)", html_body, re.I)
+        if m:
+            email = m.group(1).strip()
+        else:
+            raw_email = get_label_value("Email")
+            m2 = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", raw_email)
+            email = m2.group(0) if m2 else raw_email
+    except:
+        pass
+
+    # -----------------------------
+    # PHONE
+    # -----------------------------
+    phone = ""
+    try:
+        raw_phone = get_label_value("Phone")
+        phone = normalize_phone_us_e164(raw_phone)
+    except:
+        pass
+
+    # -----------------------------
+    # REF ID (Listing Number)
+    # -----------------------------
+    ref_id = get_label_value("Listing Number")
+
+    # -----------------------------
+    # HEADLINE (Listing Title)
+    # -----------------------------
+    headline = get_label_value("Listing Title")
+
+    # -----------------------------
+    # LISTING URL
+    # -----------------------------
+    listing_url = ""
+    try:
+        raw_url = get_label_value("Listing URL")
+        listing_url = first_http_url(raw_url)
+    except:
+        pass
+
+    # -----------------------------
+    # COMMENTS (Message)
+    # -----------------------------
+    comments = ""
+    try:
+        comments = clean_comments_block(get_label_value("Message"))
+
+        # prevent label bleed
+        if re.match(r"^agent\s+(name|email|phone)$", comments.strip(), re.I):
+            comments = ""
+
+    except:
+        pass
+
+    # -----------------------------
+    # RETURN
+    # -----------------------------
+    return {
+        "source": "tworld_website",
+        "first_name": clean(first_name),
+        "last_name": clean(last_name),
+        "email": clean(email),
+        "phone": clean(phone),
+        "ref_id": clean(ref_id),
+        "listing_id": "",
+        "headline": clean(headline),
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": "",
+        "purchase_timeline": "",
+        "comments": clean(comments),
+        "listing_url": clean(listing_url),
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+# ==============================
+# ✅ Mapper to unified nested schema
+# ==============================
+def to_nested(source: str, flat: dict, error_debug: str = "") -> dict:
+    flat = remove_not_disclosed_fields(flat or {})
+
+    # For FCBB, DO NOT backfill listing_url from labeled fields
+    if source == "fcbb":
+        listing_url = flat.get("listing_url", "")
+    else:
+        listing_url = flat.get("listing_url", "") or flat.get("originating_website", "") or flat.get("current_site_page_url", "")
+
+    nested = {
+        "source": source,
+        "contact": {
+            "first_name": flat.get("first_name", ""),
+            "last_name": flat.get("last_name", ""),
+            "email": flat.get("email", ""),
+            "phone": flat.get("phone", ""),
+            "best_time_to_contact": flat.get("best_time_to_contact", "")
+        },
+        "address": {
+            "line1": flat.get("address", "") or flat.get("address1", ""),
+            "city": flat.get("city", ""),
+            "state": flat.get("state", ""),
+            "zip": flat.get("contact_zip", "") or flat.get("zip", ""),
+            "country": flat.get("country", "")
+        },
+        "listing": {
+            "headline": flat.get("headline", ""),
+            "ref_id": flat.get("ref_id", ""),
+            "listing_id": flat.get("listing_id", ""),
+            "listing_url": listing_url,
+            # ✅ Preserve FCBB-specific labels (and harmless for others if present)
+            "originating_website": flat.get("originating_website", ""),
+            "current_site_page_url": flat.get("current_site_page_url", ""),
+            "domain": flat.get("domain", "")
+        },
+        "details": {
+            "purchase_timeline": flat.get("purchase_timeline", ""),
+            "investment_amount": flat.get("investment_amount", ""),
+            "services_interested_in": flat.get("services_interested_in", ""),
+            "heard_about": flat.get("heard_about", "")
+        },
+        "comments": flat.get("comments", "")
+    }
+    if error_debug:
+        nested["error_debug"] = error_debug
+    return nested
+
+# ==============================
+# ✅ Router (BULLETPROOF — SOURCE FORCED)
+# ==============================
+@app.route('/api/parse', methods=['POST'])
+def parse_email():
+    raw = request.get_data(as_text=True) or ''
+    body = raw
+
+    try:
+        data = request.get_json(force=False, silent=True)
+        if isinstance(data, dict) and data.get('body'):
+            body = data.get('body') or ''
+    except Exception:
+        pass
+
+    if not body:
+        return jsonify({"error": "No email content provided."}), 200
+
+    lowered = body.lower()
+    is_html = ("<html" in lowered) or ("<body" in lowered) or ("<div" in lowered)
+
+    try:
+
+        # ==============================
+        # 🔥 AXIAL
+        # Must come BEFORE FCBB because Axial notifications
+        # may mention "First Choice Business Brokers"
+        # in the recipient/company-settings boilerplate.
+        # Supports both old and new Axial email formats.
+        # ==============================
+        if (
+            (
+                "axial" in lowered
+                and (
+                    "just pursued" in lowered
+                    or "project id" in lowered
+                    or "replies to this email are not supported" in lowered
+                )
+            )
+            or (
+                re.search(r"project\s+[a-z0-9\-]+", lowered)
+                and "linkedin" in lowered
+            )
+        ):
+            flat = extract_axial_html(body)
+            flat["source"] = "axial"
+            return jsonify(to_nested("axial", flat))
+
+        # ==============================
+        # 🔥 FCBB
+        # Must come AFTER Axial because an Axial notification
+        # may contain "First Choice Business Brokers".
+        #
+        # Also must not catch BizBuySell leads that happen to
+        # contain an FCBB broker's email (ex: larry@fcbb.com).
+        # ==============================
+        elif (
+            "bizbuysell" not in lowered
+            and (
+                "oms.fcbb.com" in lowered
+                or "first choice business brokers" in lowered
+            )
+        ):
+            flat = (
+                extract_fcbb_html(body)
+                if is_html
+                else extract_fcbb_text(body)
+            )
+            flat["source"] = "fcbb"
+            return jsonify(to_nested("fcbb", flat))
+
+        # ==============================
+        # 🔥 BusinessesForSale
+        # ==============================
+        elif "businessesforsale.com" in lowered or "businesses for sale" in lowered:
+            flat = extract_businessesforsale_text(
+                body if not is_html else BeautifulSoup(body, "html.parser").get_text("\n")
+            )
+            flat["source"] = "businessesforsale"
+            return jsonify(to_nested("businessesforsale", flat))
+
+        # ==============================
+        # 🔥 BIZBUYSELL
+        # ==============================
+        elif "bizbuysell" in lowered:
+
+            # Buyer notification template
+            if "new buyer lead notification" in lowered:
+                flat = extract_bizbuysell_newbuyer_html(body)
+
+            # New Outlook / Microsoft nested HTML template
+            elif (
+                is_html
+                and "inquirer" in lowered
+                and "contact name" in lowered
+            ):
+                flat = extract_bizbuysell_html_nested(body)
+
+            # Legacy HTML template
+            elif is_html:
+                flat = extract_bizbuysell_html(body)
+
+            # Plain text template
+            else:
+                flat = extract_bizbuysell_text(body)
+
+            flat["source"] = "bizbuysell"
+            return jsonify(to_nested("bizbuysell", flat))
+
+        # ==============================
+        # 🔥 DealStream
+        # ==============================
+        elif "dealstream" in lowered or "leads.dealstream.com" in lowered:
+            flat = extract_dealstream_html(body) if is_html else extract_dealstream_text(body)
+            flat["source"] = "dealstream"
+            return jsonify(to_nested("dealstream", flat))
+
+        # ==============================
+        # 🔥 Murphy Business
+        # ==============================
+        elif "murphybusiness.com" in lowered or "murphy business" in lowered:
+            flat = extract_murphy_html(body) if is_html else extract_murphy_text(body)
+            flat["source"] = "murphybusiness"
+            return jsonify(to_nested("murphybusiness", flat))
+
+        # ==============================
+        # 🔥 BusinessBroker
+        # ==============================
+        elif "businessbroker.net" in lowered:
+            flat = extract_businessbroker_html(body) if is_html else extract_businessbroker_text(body)
+            flat["source"] = "businessbroker"
+            return jsonify(to_nested("businessbroker", flat))
+
+        # ==============================
+        # 🔥 RestaurantsForSale
+        # ==============================
+        elif "restaurants-for-sale.com" in lowered or "restaurants for sale online" in lowered:
+            flat = extract_restaurantsforsale_html(body) if is_html else extract_restaurantsforsale_text(body)
+            flat["source"] = "restaurantsforsale"
+            return jsonify(to_nested("restaurantsforsale", flat))
+
+        # ==============================
+        # 🔥 FranchiseResales
+        # ==============================
+        elif "franchiseresales.com" in lowered or "franchise resales" in lowered:
+            flat = extract_franchiseresales_text(
+                body if not is_html else BeautifulSoup(body, "html.parser").get_text("\n")
+            )
+            flat["source"] = "franchiseresales"
+            return jsonify(to_nested("franchiseresales", flat))
+
+        # ==============================
+        # 🔥 LoopNet
+        # ==============================
+        elif "loopnet.com" in lowered or "loopnet" in lowered:
+            flat = extract_loopnet_html(body) if is_html else extract_loopnet_text(body)
+            flat["source"] = "loopnet"
+            return jsonify(to_nested("loopnet", flat))
+
+        # ==============================
+        # 🔥 Crexi
+        # ==============================
+        elif "crexi.com" in lowered or "crexi" in lowered:
+            flat = extract_crexi_html(body) if is_html else extract_crexi_text(body)
+            flat["source"] = "crexi"
+            return jsonify(to_nested("crexi", flat))
+
+        # ==============================
+        # 🔥 TWorld
+        # ==============================
+        elif "listing inquiry" in lowered and "listing number" in lowered:
+            flat = extract_transworld_html(body)
+            return jsonify(to_nested("tworld_website", flat))
+
+        # ==============================
+        # 🔥 BusinessMart
+        # ==============================
+        elif (
+            "businessmart.com" in lowered
+            or (
+                "business mart listing#" in lowered
+                and "seller ref#" in lowered
+            )
+        ):
+            flat = extract_businessmart_text(
+                body if not is_html
+                else BeautifulSoup(body, "html.parser").get_text("\n")
+            )
+            flat["source"] = "businessmart"
+            return jsonify(to_nested("businessmart", flat))
+
+        # ==============================
+        # 🔥 BizListPro (LAST)
+        # ==============================
+        elif "bizlistpro.com" in lowered:
+            flat = extract_bizlistpro_html(body)
+            flat["source"] = "bizlistpro"
+            return jsonify(to_nested("bizlistpro", flat))
+
+        # ==============================
+        # ❌ UNKNOWN
+        # ==============================
+        else:
+            return jsonify(to_nested("unknown", {"source": "unknown"}))
+
+    except Exception as outer:
+        return jsonify(
+            to_nested(
+                "unknown",
+                {"source": "unknown"},
+                f"router_error: {outer}"
+            )
+        )
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"ok": True})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000) =============================================
+# Lead Parser API — Revert-Safe (Stable, no 500s)
+# =============================================
+
+from flask import Flask, request, jsonify
+from bs4 import BeautifulSoup
+import html
+import re
+from urllib.parse import urlparse
+from urllib.parse import unquote
+
+app = Flask(__name__)
+
+# ==============================
+# ✅ Shared helpers
+# ==============================
+
+def remove_not_disclosed_fields(data):
+    return {
+        k: ('' if isinstance(v, str) and 'not disclosed' in v.lower().strip() else v)
+        for k, v in (data or {}).items()
+    }
+
+def normalize_phone_us_e164(phone: str) -> str:
+    if not phone:
+        return ''
+    phone_wo_ext = re.sub(r'(?:ext|x|extension)[\s.:#-]*\d+\s*$', '', phone, flags=re.I)
+    digits = re.sub(r'\D', '', phone_wo_ext)
+    if len(digits) == 13 and digits.startswith('001'):
+        digits = digits[3:]
+    elif len(digits) == 12 and digits.startswith('01'):
+        digits = digits[2:]
+    if len(digits) == 11 and digits.startswith('1'):
+        national = digits[1:]
+    elif len(digits) == 10:
+        national = digits
+    else:
+        m = re.search(r'(\d{10})$', digits)
+        if not m: return ''
+        national = m.group(1)
+    return '+1' + national
+
+def clean_comments_block(raw_text: str) -> str:
+    if not raw_text:
+        return ''
+    text = re.split(r'(?m)^\s*[-_]{3,}\s*$', raw_text)[0]
+    patterns = [
+        r'(?is)\b(confidential(ity)? notice|this e-?mail.*confidential|intended only for the named recipient|do not disseminate|if you have received this.*in error).*',
+        r'(?is)\b(terms of use and disclaimers apply).*',
+        r'(?is)\b(be aware! online banking fraud).*',
+    ]
+    for p in patterns:
+        text = re.sub(p, '', text)
+    text = text.replace('\r', '')
+    text = re.sub(r'[ \t]+\n', '\n', text)
+    text = re.sub(r'\n{2,}', '\n', text)
+    return text.strip()
+
+def first_http_url(value: str) -> str:
+    """Grab the first visible http(s) URL and ignore bracketed tracking tails."""
+    if not value:
+        return ""
+    m = re.search(r'https?://[^\s\]]+', value)
+    return (m.group(0).rstrip(']') if m else value.strip())
+
+def derive_domain(s: str) -> str:
+    """Return bare domain (no scheme/www)."""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    if not s.startswith("http"):
+        s = "http://" + s
+    host = urlparse(s).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+def parse_address_loose(addr: str, default_country: str = "") -> dict:
+    """
+    Heuristic parser for common formats (US, UK, Canada) from a single line.
+    Returns {address1, city, state, zip, country}.
+    Safe to call on footer-like lines; if nothing matches, returns mostly empty.
+    """
+    if not addr:
+        return {"address1": "", "city": "", "state": "", "zip": "", "country": default_country or ""}
+
+    s = re.sub(r'\s+', ' ', addr.strip())
+    s = s.strip(' .')  # trim trailing periods/spaces
+
+    # Pull out an explicit country at the end if present
+    country = default_country or ""
+    country_map = {
+        r'\b(united\s+kingdom|uk)\b': 'United Kingdom',
+        r'\b(united\s+states|usa|us)\b': 'United States',
+        r'\b(canada)\b': 'Canada',
+        r'\b(england|scotland|wales|northern\s+ireland)\b': 'United Kingdom',  # treated as UK
+    }
+    tail = s.lower()
+    for pat, name in country_map.items():
+        m = re.search(pat + r'\.?$', tail)  # only at end
+        if m:
+            country = name
+            s = s[:m.start()].strip(' ,.')
+            break
+
+    # Regexes
+    us_zip_re = re.compile(r'\b\d{5}(?:-\d{4})?\b')
+    us_state_re = re.compile(r'\b(AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NC|ND|NE|NH|NJ|NM|NV|NY|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VA|VT|WA|WI|WV|WY)\b', re.I)
+
+    ca_postal_re = re.compile(r'\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s?\d[ABCEGHJ-NPRSTV-Z]\d\b', re.I)
+
+    # UK postcode (two parts to preserve the space)
+    uk_postal_re = re.compile(r'\b([A-Z]{1,2}\d{1,2}[A-Z]?)\s*(\d[A-Z]{2})\b', re.I)
+
+    parts = [p.strip(' .,') for p in re.split(r'[;,]', s) if p.strip(' .,')]
+    # Try UK
+    m_uk = uk_postal_re.search(s)
+    if m_uk:
+        zip_code = (m_uk.group(1).upper() + " " + m_uk.group(2).upper()).strip()
+        # City: token immediately before the postcode (by comma split)
+        city = ""
+        before = s[:m_uk.start()].strip(' ,.')
+        before_parts = [p.strip() for p in re.split(r'[;,]', before) if p.strip()]
+        if before_parts:
+            city = before_parts[-1]
+        # Address1: everything before city
+        address1 = ", ".join(before_parts[:-1]) if len(before_parts) > 1 else ""
+        # State is not generally used for UK (optionally use England/Scotland… if you want)
+        state = ""
+        return {
+            "address1": address1,
+            "city": city,
+            "state": state,
+            "zip": zip_code,
+            "country": country or "United Kingdom"
+        }
+
+    # Try US
+    m_us_zip = us_zip_re.search(s)
+    if m_us_zip:
+        zip_code = m_us_zip.group(0)
+        before = s[:m_us_zip.start()].strip(' ,.')
+        after = s[m_us_zip.end():].strip(' ,.')
+
+        # Try to find state (2-letter) immediately before ZIP in the "before" chunk
+        state = ""
+        city = ""
+        bparts = [p.strip() for p in re.split(r'[;,]', before) if p.strip()]
+        if bparts:
+            last = bparts[-1]
+            m_state = us_state_re.search(last)
+            if m_state:
+                state = m_state.group(1).upper()
+                # city = text before state in that part (or previous part)
+                city = last[:m_state.start()].strip(' ,') or (bparts[-2] if len(bparts) >= 2 else "")
+                # address1 = everything before the city block
+                address1 = ", ".join(bparts[:-1]) if len(bparts) > 1 else ""
+            else:
+                # No explicit state: assume last part is city, rest is address1
+                city = last
+                address1 = ", ".join(bparts[:-1]) if len(bparts) > 1 else ""
+        else:
+            address1 = ""
+        return {
+            "address1": address1,
+            "city": city,
+            "state": state,
+            "zip": zip_code,
+            "country": country or "United States"
+        }
+
+    # Try Canada
+    m_ca = ca_postal_re.search(s)
+    if m_ca:
+        zip_code = m_ca.group(0).upper()
+        before = s[:m_ca.start()].strip(' ,.')
+        bparts = [p.strip() for p in re.split(r'[;,]', before) if p.strip()]
+        city = bparts[-1] if bparts else ""
+        address1 = ", ".join(bparts[:-1]) if len(bparts) > 1 else ""
+        state = ""  # (Province isn’t parsed here—can be added similarly to US states if needed)
+        return {
+            "address1": address1,
+            "city": city,
+            "state": state,
+            "zip": zip_code,
+            "country": country or "Canada"
+        }
+
+    # Fallback: return as address1
+    return {"address1": s, "city": "", "state": "", "zip": "", "country": country}
+
+# ==============================
 # ✅ Axial (HTML)
 # ==============================
 def extract_axial_html(html_body):
