@@ -5,11 +5,33 @@
 from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup
 import html
+import hmac
+import logging
+import os
 import re
 from urllib.parse import urlparse
 from urllib.parse import unquote
 
 app = Flask(__name__)
+
+# ==============================
+# Optional shared secret
+# ==============================
+# PARSER_SECRET unset: no check, as before.
+# PARSER_SECRET set, PARSER_ENFORCE unset: callers without a matching
+#   X-Parser-Secret header are logged and still served.
+# PARSER_SECRET set and PARSER_ENFORCE=1: callers without it get a 401.
+def secret_check_failed():
+    secret = os.environ.get("PARSER_SECRET", "")
+    if not secret:
+        return False
+    sent = request.headers.get("X-Parser-Secret", "")
+    if hmac.compare_digest(sent.encode(), secret.encode()):
+        return False
+    if os.environ.get("PARSER_ENFORCE") == "1":
+        return True
+    logging.warning("parse request without a valid X-Parser-Secret")
+    return False
 
 # ==============================
 # ✅ Shared helpers
@@ -3127,6 +3149,8 @@ def to_nested(source: str, flat: dict, error_debug: str = "") -> dict:
 # ==============================
 @app.route('/api/parse', methods=['POST'])
 def parse_email():
+    if secret_check_failed():
+        return jsonify({"error": "Unauthorized."}), 401
     raw = request.get_data(as_text=True) or ''
     body = raw
 
