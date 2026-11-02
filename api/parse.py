@@ -8,6 +8,7 @@ import html
 import re
 from urllib.parse import urlparse
 from urllib.parse import unquote
+from urllib.request import Request, urlopen
 
 app = Flask(__name__)
 
@@ -3075,6 +3076,80 @@ def extract_transworld_html(html_body):
 # ==============================
 # ✅ Mapper to unified nested schema
 # ==============================
+# ====================================
+# ✅ BizListings.ca (HTML / TEXT Email)
+# ====================================
+# The inquiry e-mail carries BizListings' own "Listing reference" (a UUID),
+# not the broker's Internal ID. The public listing page shows the Internal ID
+# the broker typed in ("Internal ID 20261007"), so read it from there; the
+# UUID stays in listing_id.
+def bizlistings_internal_id(listing_url):
+    if not listing_url or "bizlistings.ca/" not in listing_url.lower():
+        return ""
+    try:
+        req = Request(listing_url, headers={"User-Agent": "Mozilla/5.0 (DealStudio lead parser)"})
+        page = urlopen(req, timeout=6).read(400000).decode("utf-8", "ignore")
+    except Exception:
+        return ""
+    text = BeautifulSoup(page, "html.parser").get_text(" ")
+    text = re.sub(r"\s+", " ", text)
+    m = re.search(r"Internal ID\s*:?\s*([A-Za-z0-9][A-Za-z0-9\-]*)", text, re.I)
+    return m.group(1).strip() if m else ""
+
+
+def extract_bizlistings(body, is_html):
+    txt = BeautifulSoup(body, "html.parser").get_text("\n") if is_html else body
+    txt = html.unescape(txt).replace("\r", "")
+    # Drop the zero-width preheader padding BizListings adds
+    txt = re.sub(r"[​-‏⁠﻿͏]", "", txt)
+
+    def get_after(label):
+        m = re.search(rf"^\s*{re.escape(label)}:\s*([^\n]+)", txt, re.I | re.M)
+        return m.group(1).strip() if m else ""
+
+    full_name = get_after("Buyer")
+    if " " in full_name:
+        first_name, last_name = full_name.split(" ", 1)
+    else:
+        first_name, last_name = full_name, ""
+
+    m_head = re.search(r"New buyer inquiry on ([^\n]+)", txt, re.I)
+    headline = m_head.group(1).strip() if m_head else ""
+
+    listing_url = first_http_url(get_after("Listing"))
+    if not listing_url:
+        m_url = re.search(r"https?://(?:www\.)?bizlistings\.ca/listing/[^\s\"'<>)]+", body, re.I)
+        listing_url = m_url.group(0) if m_url else ""
+
+    # The buyer's message is the text after the Financing line
+    comments = ""
+    m_msg = re.search(r"^\s*Financing:[^\n]*\n(.*)", txt, re.I | re.M | re.S)
+    if m_msg:
+        comments = clean_comments_block(m_msg.group(1))
+
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": get_after("Email"),
+        "phone": normalize_phone_us_e164(get_after("Phone")),
+        "ref_id": bizlistings_internal_id(listing_url),
+        "listing_id": get_after("Listing reference"),
+        "headline": headline,
+        "address": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "contact_zip": "",
+        "investment_amount": get_after("Financing"),
+        "purchase_timeline": "",
+        "comments": comments,
+        "listing_url": listing_url,
+        "domain": "bizlistings.ca",
+        "services_interested_in": "",
+        "heard_about": "BizListings.ca"
+    }
+
+
 def to_nested(source: str, flat: dict, error_debug: str = "") -> dict:
     flat = remove_not_disclosed_fields(flat or {})
 
@@ -3146,13 +3221,23 @@ def parse_email():
     try:
 
         # ==============================
+        # 🔥 BizListings.ca
+        # First: its own wording ("Listing reference", "Broker / seller")
+        # is unique, and a forwarded copy can mention other portals.
+        # ==============================
+        if "bizlistings.ca" in lowered and "listing reference" in lowered:
+            flat = extract_bizlistings(body, is_html)
+            flat["source"] = "bizlistings"
+            return jsonify(to_nested("bizlistings", flat))
+
+        # ==============================
         # 🔥 AXIAL
         # Must come BEFORE FCBB because Axial notifications
         # may mention "First Choice Business Brokers"
         # in the recipient/company-settings boilerplate.
         # Supports both old and new Axial email formats.
         # ==============================
-        if (
+        elif (
             (
                 "axial" in lowered
                 and (
