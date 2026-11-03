@@ -1619,6 +1619,102 @@ def extract_bizbuysell_html(html_body):
         "heard_about": "",
     }
 # ==============================
+# ✅ BizBuySell — "Name of Sender" layout
+# Sent for some inquiries (seen Nov 2026 from a buyer signed in to
+# BizBuySell):
+#   Your listing (BizBuySell Ad # 2314738): Headline
+#   Name of Sender: ...
+#   Email of Sender: ...
+#   Telephone: ...
+#   Amount Available to Invest: ...
+#   -----------------------------
+# Kept separate so the other BizBuySell parsers are untouched.
+# ==============================
+def extract_bizbuysell_sender(body, is_html):
+    if is_html:
+        txt = BeautifulSoup(body, "html.parser").get_text("\n")
+    else:
+        txt = body
+    txt = txt.replace('\r', '')
+
+    listing_id, headline = "", ""
+    m = re.search(r"Ad\s*#\s*(\d+)\s*\)\s*:?\s*([^\n]*)", txt, re.IGNORECASE)
+    if m:
+        listing_id = m.group(1)
+        headline = m.group(2).strip()
+    else:
+        m = re.search(r"Ad\s*#\s*(\d+)", txt, re.IGNORECASE)
+        if m:
+            listing_id = m.group(1)
+
+    # Everything between the listing line and the dashed separator / footer
+    start = m.end() if m else 0
+    end_m = re.search(r"\n\s*-{10,}|Note:\s*The above message", txt[start:], re.IGNORECASE)
+    block = txt[start:start + end_m.start()] if end_m else txt[start:]
+
+    labels = {
+        "name of sender": "name",
+        "email of sender": "email",
+        "telephone": "phone",
+        "phone": "phone",
+        "amount available to invest": "investment_amount",
+        "able to invest": "investment_amount",
+        "purchase within": "purchase_timeline",
+        "zip": "contact_zip",
+        "zip code": "contact_zip",
+        "comments": "comments",
+        "message": "comments",
+    }
+    label_re = re.compile(
+        r"^\s*(" + "|".join(sorted(map(re.escape, labels), key=len, reverse=True)) + r")\s*:\s*",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    fields = {}
+    extra = []
+    hits = list(label_re.finditer(block))
+    if hits and block[:hits[0].start()].strip():
+        extra.append(block[:hits[0].start()].strip())
+    for i, h in enumerate(hits):
+        nxt = hits[i + 1].start() if i + 1 < len(hits) else len(block)
+        key = labels[h.group(1).lower()]
+        val = block[h.end():nxt].strip()
+        if key in ("name", "email", "phone", "investment_amount", "purchase_timeline", "contact_zip"):
+            # one-line values; anything after the first line is message text
+            first, _, rest = val.partition("\n")
+            val = first.strip()
+            if rest.strip():
+                extra.append(rest.strip())
+        if key == "comments":
+            extra.append(val)
+        else:
+            fields[key] = val
+
+    name = fields.get("name", "")
+    first_name, last_name = (name.split(' ', 1) if ' ' in name else (name, ''))
+
+    email_raw = fields.get("email", "")
+    m_email = re.search(r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}', email_raw)
+    email = m_email.group(0) if m_email else ""
+
+    return {
+        "first_name": first_name.strip(),
+        "last_name": last_name.strip(),
+        "email": email,
+        "phone": normalize_phone_us_e164(fields.get("phone", "")),
+        "ref_id": "",
+        "listing_id": listing_id,
+        "headline": headline,
+        "contact_zip": fields.get("contact_zip", ""),
+        "investment_amount": fields.get("investment_amount", ""),
+        "purchase_timeline": fields.get("purchase_timeline", ""),
+        "comments": clean_comments_block("\n".join(e for e in extra if e)),
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": ""
+    }
+
+# ==============================
 # ✅ BizBuySell (TEXT) — original pattern
 # ==============================
 def extract_bizbuysell_text(text_body):
@@ -3296,6 +3392,10 @@ def parse_email():
             # Buyer notification template
             if "new buyer lead notification" in lowered:
                 flat = extract_bizbuysell_newbuyer_html(body)
+
+            # "Name of Sender / Email of Sender" layout
+            elif "name of sender" in lowered and "email of sender" in lowered:
+                flat = extract_bizbuysell_sender(body, is_html)
 
             # New Outlook / Microsoft nested HTML template
             elif (
