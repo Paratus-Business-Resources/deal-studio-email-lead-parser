@@ -1715,6 +1715,64 @@ def extract_bizbuysell_sender(body, is_html):
     }
 
 # ==============================
+# ✅ BizBuySell Broker Directory ("New broker directory lead")
+# A buyer or seller writes to the broker's BizBuySell / BrokerWorks
+# directory profile. No listing, so no ref_id: Make's
+# "Source iz BrokerDirectory" route creates the contact only.
+# Labels sit on their own line with the value on the next one:
+#   Contact Name: / Contact Email: / Contact Phone: / Comments:
+# ==============================
+def is_bizbuysell_broker_directory(lowered: str) -> bool:
+    return "bizbuysell" in lowered and (
+        "new broker directory lead" in lowered
+        or "broker directory profile" in lowered
+        or "broker directory inquiry" in lowered
+    ) and "contact email" in lowered
+
+
+def extract_bizbuysell_broker_directory(body, is_html):
+    txt = BeautifulSoup(body, "html.parser").get_text("\n") if is_html else body
+    txt = txt.replace("\r", "").replace("\xa0", " ")
+
+    # Start at the inquirer block, so the broker's own address in
+    # "...Broker Directory profile for this email X" is never taken.
+    m_start = re.search(r"Inquirer'?s?\s+Information", txt, re.IGNORECASE)
+    block = txt[m_start.end():] if m_start else txt
+    m_end = re.search(r"You can reply directly to this email|For your convenience", block, re.IGNORECASE)
+    if m_end:
+        block = block[:m_end.start()]
+
+    labels = {"contact name": "name", "contact email": "email", "contact phone": "phone", "comments": "comments"}
+    label_re = re.compile(r"^\s*(contact name|contact email|contact phone|comments)\s*:\s*", re.IGNORECASE | re.MULTILINE)
+    fields = {}
+    hits = list(label_re.finditer(block))
+    for i, h in enumerate(hits):
+        nxt = hits[i + 1].start() if i + 1 < len(hits) else len(block)
+        fields[labels[h.group(1).lower()]] = block[h.end():nxt].strip()
+
+    def one_line(v):
+        return next((ln.strip() for ln in (v or "").split("\n") if ln.strip()), "")
+
+    name = one_line(fields.get("name"))
+    first_name, last_name = (name.split(" ", 1) if " " in name else (name, ""))
+    m_email = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", fields.get("email", ""))
+    comments = re.sub(r"[ \t]*\n[ \t]*", " ", fields.get("comments", "")).strip()
+
+    return {
+        "first_name": first_name.strip(),
+        "last_name": last_name.strip(),
+        "email": m_email.group(0) if m_email else "",
+        "phone": normalize_phone_us_e164(one_line(fields.get("phone"))),
+        "ref_id": "",
+        "listing_id": "",
+        "headline": "",
+        "comments": clean_comments_block(comments),
+        "listing_url": "",
+        "services_interested_in": "",
+        "heard_about": "BizBuySell Broker Directory",
+    }
+
+# ==============================
 # ✅ BizBuySell (TEXT) — original pattern
 # ==============================
 def extract_bizbuysell_text(text_body):
@@ -3387,6 +3445,17 @@ def parse_email():
         # ==============================
         # 🔥 BIZBUYSELL
         # ==============================
+        # ==============================
+        # 🔥 BizBuySell Broker Directory
+        # Before the listing templates: its "Inquirer's Information /
+        # Contact Name" wording otherwise sends it to the nested
+        # listing parser, which finds no listing and returns blanks.
+        # ==============================
+        elif is_bizbuysell_broker_directory(lowered):
+            flat = extract_bizbuysell_broker_directory(body, is_html)
+            flat["source"] = "BrokerDirectory"
+            return jsonify(to_nested("BrokerDirectory", flat))
+
         elif "bizbuysell" in lowered:
 
             # Buyer notification template
